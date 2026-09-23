@@ -143,9 +143,15 @@ class StoreTests(unittest.TestCase):
             CREATE TABLE pairs(luna_id TEXT PRIMARY KEY, astra_id TEXT NOT NULL, run_id TEXT NOT NULL);
             CREATE TABLE messages(id INTEGER PRIMARY KEY, thread_id TEXT, sender_id TEXT, recipient_id TEXT,
                 body TEXT, created_at TEXT, delivered_at TEXT, read_at TEXT,
-                delivery_claim TEXT, delivery_claimed_at TEXT);
+                delivery_claim TEXT, delivery_claimed_at TEXT, delivery_state TEXT NOT NULL DEFAULT 'pending',
+                delivery_worker TEXT, delivery_error TEXT);
+            INSERT INTO agents(id,kind,name,created_at) VALUES('old-recipient','luna','Old recipient','t');
             INSERT INTO runs VALUES('old-run','old goal','working',NULL,'t','t');
             INSERT INTO messages(id,delivered_at) VALUES(1,'delivered timestamp');
+            INSERT INTO messages(id,recipient_id,delivered_at) VALUES(2,'old-recipient',NULL);
+            INSERT INTO messages(id,recipient_id,delivery_state) VALUES(3,'old-recipient','uncertain');
+            INSERT INTO messages(id,recipient_id,delivery_state,delivery_claim,delivery_worker) VALUES(4,'old-recipient','claimed','stale','worker');
+            INSERT INTO messages(id,recipient_id,delivery_state) VALUES(5,'old-recipient','dispatching');
         """)
         db.commit()
         db.close()
@@ -154,6 +160,12 @@ class StoreTests(unittest.TestCase):
         self.assertIn("codex_thread_id", {row["name"] for row in self.store.db.execute("PRAGMA table_info(agents)")})
         self.assertEqual(self.store.db.execute("SELECT delivery_state FROM messages WHERE id=1").fetchone()["delivery_state"], "delivered")
         self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=1").fetchone()["legacy"], 1)
+        self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=2").fetchone()["legacy"], 0)
+        self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=3").fetchone()["legacy"], 1)
+        self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=5").fetchone()["legacy"], 1)
+        self.assertEqual(self.store.db.execute("SELECT delivery_state FROM messages WHERE id=4").fetchone()["delivery_state"], "pending")
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM inbox_notifications WHERE recipient_id='old-recipient'").fetchone()[0], 1)
+        self.assertEqual([m['id'] for m in self.store.claim_inbox('old-recipient')['messages']], [2, 4])
 
     def test_claim_ack_reply_and_legacy_targeting(self):
         ids = start(self.store)
@@ -162,6 +174,7 @@ class StoreTests(unittest.TestCase):
         a = self.store.claim_inbox(ids['luna_id'], limit=2)
         self.assertEqual([m['id'] for m in a['messages']], [first['id'], first['id'] + 1])
         self.assertEqual(self.store.claim_inbox(ids['luna_id'])['messages'], [])
+        self.assertEqual(self.store.claim_inbox(ids['luna_id'], message_id=first['id'])['messages'], [])
         self.store.send(ids['thread_id'], ids['luna_id'], 'answer', 'r', reply_to=first['id'])
         self.assertIsNotNone(self.store.messages(ids['thread_id'])[0]['handled_at'])
         with self.assertRaises(ValueError):
@@ -208,11 +221,46 @@ class StoreTests(unittest.TestCase):
     def test_uncertain_wakeup_is_quarantined_but_explicit_inbox_still_works(self):
         ids = start(self.store)
         self.store.send(ids['thread_id'], ids['astra_id'], 'work', 'uncertain-work')
-        self.store.notification_dispatching(ids['luna_id'])
-        self.store.notification_result(ids['luna_id'], 'uncertain', 'ambiguous')
+        notification_id = self.store.notification_batch()[0]['notification_id']
+        self.store.notification_dispatching(ids['luna_id'], notification_id)
+        self.store.notification_result(ids['luna_id'], notification_id, 'uncertain', 'ambiguous')
         self.assertEqual(self.store.notification_batch(), [])
         self.assertEqual(len(self.store.claim_inbox(ids['luna_id'])['messages']), 1)
         self.assertIsNone(self.store.db.execute('SELECT 1 FROM inbox_notifications WHERE recipient_id=?', (ids['luna_id'],)).fetchone())
+
+    def test_stale_dispatch_callback_cannot_clobber_replacement_notification(self):
+        ids = start(self.store)
+        first = self.store.send(ids['thread_id'], ids['astra_id'], 'first', 'race-1')
+        n1 = self.store.notification_batch()[0]['notification_id']
+        self.assertTrue(self.store.notification_dispatching(ids['luna_id'], n1))
+        batch = self.store.claim_inbox(ids['luna_id'])
+        self.store.acknowledge(ids['luna_id'], batch['token'], [first['id']])
+        self.store.send(ids['thread_id'], ids['astra_id'], 'second', 'race-2')
+        n2 = self.store.notification_batch()[0]['notification_id']
+        self.assertNotEqual(n1, n2)
+        self.assertFalse(self.store.notification_result(ids['luna_id'], n1, 'sent'))
+        current = self.store.notification_batch()
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]['notification_id'], n2)
+
+    def test_partial_ack_does_not_wake_for_other_messages_still_leased(self):
+        ids = start(self.store)
+        one = self.store.send(ids['thread_id'], ids['astra_id'], 'one', 'partial-1')
+        two = self.store.send(ids['thread_id'], ids['astra_id'], 'two', 'partial-2')
+        batch = self.store.claim_inbox(ids['luna_id'])
+        self.store.acknowledge(ids['luna_id'], batch['token'], [one['id']])
+        self.assertEqual(self.store.notification_batch(), [])
+        self.assertEqual(self.store.claim_inbox(ids['luna_id'], message_id=two['id'])['messages'], [])
+
+    def test_resolving_legacy_uncertain_delivery_retry_makes_it_notification_eligible(self):
+        ids = start(self.store)
+        msg = self.store.send(ids['thread_id'], ids['astra_id'], 'legacy uncertain', 'legacy-uncertain')
+        self.store.db.execute("UPDATE messages SET legacy=1,delivery_state='uncertain' WHERE id=?", (msg['id'],))
+        self.store.db.execute("DELETE FROM inbox_notifications WHERE recipient_id=?", (ids['luna_id'],))
+        self.store.db.commit()
+        self.store.resolve_delivery(msg['id'], retry=True)
+        self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=?", (msg['id'],)).fetchone()[0], 0)
+        self.assertEqual(len(self.store.notification_batch()), 1)
 
 
 if __name__ == "__main__":

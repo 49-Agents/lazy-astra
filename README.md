@@ -122,8 +122,10 @@ agents can also recognize a repeated message. Offline/unbound actors keep their
 messages pending. Legacy messages already in existing stores are marked legacy
 during migration and are not automatically renotified, so migration cannot flood
 old history. Reconcile an old queued envelope by ID with `inbox next --message-id ID`,
-then acknowledge it normally. Legacy pending/uncertain transport rows remain intact
-and can still be explicitly resolved. No history or Codex queue rows are deleted.
+then acknowledge it normally. Legacy pending or safely claimed-but-not-dispatched
+transport rows become eligible for coalesced wake-ups. Legacy uncertain rows remain
+quarantined; `resolve-delivery --message-id ID --retry` explicitly makes one eligible.
+No history or Codex queue rows are deleted.
 Watcher diagnostics are visible in its tmux session.
 
 ```bash

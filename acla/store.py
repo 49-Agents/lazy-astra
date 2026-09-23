@@ -30,6 +30,7 @@ class Store:
         self.init()
 
     def init(self) -> None:
+        had_legacy_marker = any(row["name"] == "legacy" for row in self.db.execute("PRAGMA table_info(messages)"))
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS runs (
             id TEXT PRIMARY KEY, goal TEXT NOT NULL, state TEXT NOT NULL,
@@ -90,9 +91,14 @@ class Store:
         self._ensure_column("messages", "inbox_claimed_at", "TEXT")
         self._ensure_column("messages", "legacy", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("idempotency", "reply_to", "INTEGER")
-        # Rows predating inbox consumption are intentionally excluded from automatic wakeups.
-        self.db.execute("UPDATE messages SET legacy=0 WHERE handled_at IS NOT NULL")
         self.db.execute("UPDATE messages SET delivery_state='delivered' WHERE delivered_at IS NOT NULL AND delivery_state='pending'")
+        if not had_legacy_marker:
+            # Old never-dispatched work stays eligible; accepted history is not replayed.
+            self.db.execute("UPDATE messages SET delivery_state='pending',delivery_claim=NULL,delivery_claimed_at=NULL,delivery_worker=NULL WHERE delivered_at IS NULL AND delivery_state='claimed'")
+            self.db.execute("UPDATE messages SET legacy=0 WHERE delivered_at IS NULL AND delivery_state='pending'")
+            recipients = self.db.execute("SELECT DISTINCT m.recipient_id FROM messages m JOIN agents a ON a.id=m.recipient_id WHERE m.legacy=0 AND m.handled_at IS NULL AND m.delivered_at IS NULL").fetchall()
+            for recipient in recipients:
+                self.db.execute("INSERT OR IGNORE INTO inbox_notifications(recipient_id,notification_id,state,created_at) VALUES(?,?,'pending',?)", (recipient[0],new_id(),now()))
         self.db.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -393,17 +399,18 @@ class Store:
     def notification_batch(self, limit: int = 100) -> list[sqlite3.Row]:
         return self.db.execute("SELECT n.*,a.codex_thread_id,a.codex_home,a.workspace,a.kind,a.tmux_session,a.tmux_socket FROM inbox_notifications n JOIN agents a ON a.id=n.recipient_id WHERE n.state='pending' ORDER BY n.created_at LIMIT ?", (limit,)).fetchall()
 
-    def notification_dispatching(self, recipient_id: str) -> None:
-        cur = self.db.execute("UPDATE inbox_notifications SET state='dispatching' WHERE recipient_id=? AND state='pending'", (recipient_id,))
-        if cur.rowcount != 1: raise ValueError('notification is not pending')
+    def notification_dispatching(self, recipient_id: str, notification_id: str) -> bool:
+        cur = self.db.execute("UPDATE inbox_notifications SET state='dispatching',claimed_at=? WHERE recipient_id=? AND notification_id=? AND state='pending'", (now(),recipient_id,notification_id))
         self.db.commit()
+        return cur.rowcount == 1
 
-    def notification_result(self, recipient_id: str, state: str, error: str | None = None) -> None:
-        self.db.execute("UPDATE inbox_notifications SET state=?,error=? WHERE recipient_id=?", (state,error,recipient_id)); self.db.commit()
+    def notification_result(self, recipient_id: str, notification_id: str, state: str, error: str | None = None) -> bool:
+        cur = self.db.execute("UPDATE inbox_notifications SET state=?,error=?,claimed_at=NULL WHERE recipient_id=? AND notification_id=? AND state='dispatching'", (state,error,recipient_id,notification_id)); self.db.commit()
+        return cur.rowcount == 1
 
     def notification_recover(self, stale_after: int = 900) -> None:
         cutoff = datetime.fromtimestamp(datetime.now().timestamp() - stale_after, timezone.utc).isoformat()
-        self.db.execute("UPDATE inbox_notifications SET state='uncertain',error=COALESCE(error,'dispatch lease expired') WHERE state='dispatching' AND created_at<?", (cutoff,)); self.db.commit()
+        self.db.execute("UPDATE inbox_notifications SET state='uncertain',error=COALESCE(error,'dispatch lease expired'),claimed_at=NULL WHERE state='dispatching' AND claimed_at<?", (cutoff,)); self.db.commit()
 
     def resolve_notification(self, recipient_id: str, retry: bool) -> None:
         state = 'pending' if retry else 'sent'
@@ -534,11 +541,18 @@ class Store:
     def resolve_delivery(self, message_id: int, retry: bool) -> None:
         state = 'pending' if retry else 'delivered'
         delivered = None if retry else now()
-        cur = self.db.execute("UPDATE messages SET delivery_state=?,delivery_claim=NULL,delivery_claimed_at=NULL,delivery_worker=NULL,delivery_error=NULL,delivered_at=? WHERE id=? AND delivery_state='uncertain' AND delivered_at IS NULL",
-                              (state, delivered, message_id))
-        if cur.rowcount != 1:
-            raise ValueError("message is not awaiting uncertain-delivery resolution")
-        self.db.commit()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            message = self.db.execute("SELECT recipient_id FROM messages WHERE id=? AND delivery_state='uncertain' AND delivered_at IS NULL", (message_id,)).fetchone()
+            cur = self.db.execute("UPDATE messages SET delivery_state=?,delivery_claim=NULL,delivery_claimed_at=NULL,delivery_worker=NULL,delivery_error=NULL,delivered_at=?,legacy=CASE WHEN ? THEN 0 ELSE legacy END WHERE id=? AND delivery_state='uncertain' AND delivered_at IS NULL",
+                                  (state, delivered, int(retry), message_id))
+            if cur.rowcount != 1:
+                raise ValueError("message is not awaiting uncertain-delivery resolution")
+            if retry and message:
+                self._refresh_notification(message['recipient_id'])
+            self.db.commit()
+        except Exception:
+            self.db.rollback(); raise
 
     def messages(self, thread_id: str) -> list[dict]:
         return [dict(row) for row in self.db.execute("SELECT * FROM messages WHERE thread_id=? ORDER BY id", (thread_id,))]
@@ -552,7 +566,9 @@ class Store:
             l.name AS luna_name, l.tmux_session AS luna_session, l.codex_thread_id AS luna_codex_thread_id,
             l.codex_home AS luna_codex_home, l.model AS luna_model, t.id AS thread_id,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.delivered_at IS NULL) AS pending_messages,
-            (SELECT m.delivery_error FROM messages m WHERE m.thread_id=t.id AND m.delivery_error IS NOT NULL ORDER BY m.id DESC LIMIT 1) AS delivery_error
+            (SELECT m.delivery_error FROM messages m WHERE m.thread_id=t.id AND m.delivery_error IS NOT NULL ORDER BY m.id DESC LIMIT 1) AS delivery_error,
+            (SELECT n.state FROM inbox_notifications n WHERE n.recipient_id=l.id) AS inbox_notification_state,
+            (SELECT n.error FROM inbox_notifications n WHERE n.recipient_id=l.id) AS inbox_notification_error
             FROM pairs p JOIN agents a ON a.id=p.astra_id JOIN agents l ON l.id=p.luna_id
             LEFT JOIN threads t ON t.luna_id=p.luna_id WHERE p.run_id=?""", (run_id,)).fetchall()
         return {"run": dict(run), "streams": [dict(row) for row in streams]}

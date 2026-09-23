@@ -271,27 +271,28 @@ def cmd_poll(args, *, quiet=False):
                 recipient = store.agent(row['recipient_id'])
                 if not recipient['codex_thread_id']:
                     continue
+                if not store.notification_dispatching(recipient['id'], row['notification_id']):
+                    continue
                 try:
                     if recipient['kind'] == 'luna':
                         thread = store.db.execute('SELECT run_id FROM pairs WHERE luna_id=?', (recipient['id'],)).fetchone()
                         verify_destination(recipient['tmux_session'], recipient['id'], thread['run_id'],
                             'luna', recipient['tmux_socket'], require_existing=True)
                 except (RuntimeError, OSError) as exc:
-                    store.notification_result(recipient['id'], 'pending', str(exc))
+                    store.notification_result(recipient['id'], row['notification_id'], 'pending', str(exc))
                     errors.append({'recipient_id': recipient['id'], 'state': 'pending', 'error': str(exc)})
                     continue
-                store.notification_dispatching(recipient['id'])
                 try:
                     queue_message(recipient['codex_thread_id'], envelope(store, row),
                                   codex_home=recipient['codex_home'], workspace=recipient['workspace'])
                 except DeliveryUnavailable as exc:
-                    store.notification_result(recipient['id'], 'pending', str(exc))
+                    store.notification_result(recipient['id'], row['notification_id'], 'pending', str(exc))
                     errors.append({'recipient_id': recipient['id'], 'state': 'pending', 'error': str(exc)})
                 except (DeliveryUncertain, OSError, RuntimeError) as exc:
-                    store.notification_result(recipient['id'], 'uncertain', str(exc))
+                    store.notification_result(recipient['id'], row['notification_id'], 'uncertain', str(exc))
                     errors.append({'recipient_id': recipient['id'], 'state': 'uncertain', 'error': str(exc)})
                 else:
-                    store.notification_result(recipient['id'], 'sent')
+                    store.notification_result(recipient['id'], row['notification_id'], 'sent')
                     delivered.append(recipient['id'])
         if not quiet or delivered or errors:
             output({'delivered': delivered, 'errors': errors})

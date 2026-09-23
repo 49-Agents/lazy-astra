@@ -176,6 +176,9 @@ python3 /absolute/plugin/acla_cli.py resolve-delivery --message-id 123 --retry
 For an uncertain coalesced wake-up, inspect that exact Codex task before running
 `resolve-notification --recipient-id ID --delivered` or `--retry`. The command
 works only from the recipient's own bound Codex task.
+On upgrade, pending or safely claimed-but-not-dispatched legacy messages are
+eligible for coalesced wake-ups; legacy delivered history is not replayed. Legacy
+uncertain message deliveries remain quarantined until `resolve-delivery --retry`.
 
 For an owner-requested stop or controlled restart, `stop-actor --luna-id '<ID>'`
 checks the saved tmux ownership and retains the conversation and messages.
