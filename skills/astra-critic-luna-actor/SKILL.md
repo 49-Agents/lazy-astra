@@ -50,12 +50,31 @@ If that environment variable is absent, use a known exact task UUID through
    CLI prompt, and starts one watcher. It returns the run, actor, review-thread,
    and tmux identities. Save them. `awaiting_actor_binding` means the process
    started but has not yet registered its actual Codex conversation. Check status;
-   a trust/login/model error may require opening the returned tmux terminal.
-   Do not inject text into such prompts or claim the actor is ready prematurely.
+   login, hook trust, or model errors may require opening the returned terminal.
+   Do not claim the actor is ready before it binds.
 4. For another workstream, use the same run ID/goal with a different name,
    worktree, and handoff file. `--luna-model` selects an explicitly requested
    alternative. `--interval` changes the shared state store's polling interval;
    the default is five minutes. Empty polls do not invoke a model.
+
+### Workspace trust
+
+The owner authorizes automatic workspace trust for actors launched with this
+workflow. `run-start` defaults to `--workspace-trust trusted` for any selected
+workspace, including new worktrees, on both initial launch and resume. It passes
+an exact-workspace Codex configuration override for that invocation, allowing
+project configuration and instructions to load. Do not request trust confirmation
+again for each ACLA launch. The launcher preserves workspace-write and on-request
+command approvals and does not change the user's global Codex configuration.
+Use `--workspace-trust configured` if the owner requests normal Codex trust
+settings/prompts. Login, hook trust, and command approvals are separate.
+
+For an existing actor stalled at a directory-trust prompt from an older launch,
+use the updated helper's `stop-actor --luna-id '<ID>'`, then repeat its original
+`run-start` with the same state, identities, model, workspace, and handoff. This
+controlled restart applies the trust override and retains any bound conversation.
+Do not inject keystrokes into interactive prompts. If a trust prompt persists
+after one restart with the updated launcher, report the exact blocker.
 
 ## Review the inbox
 

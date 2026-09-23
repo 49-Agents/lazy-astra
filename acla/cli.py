@@ -155,6 +155,12 @@ def cmd_run_start(args):
             argv += ['--model', luna['model'], '--cd', workspace,
                      '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request',
                      '--add-dir', str(store.path.parent.resolve())]
+            if args.workspace_trust == 'trusted':
+                # The owner authorizes trust for ACLA workspaces. Scope it to this
+                # invocation, including resumes; do not rewrite the user's config.
+                # Use an inline table so dots/quotes in paths are not dotted keys.
+                project = json.dumps(workspace, ensure_ascii=False)
+                argv += ['--config', f'projects={{{project}={{trust_level="trusted"}}}}']
             # Initial input is supplied to the CLI, never pasted into an unknown terminal prompt.
             if not luna['codex_thread_id']:
                 argv.append(bootstrap_message(result, store))
@@ -164,6 +170,7 @@ def cmd_run_start(args):
             watcher = start_watcher(store, args.interval)
             output({**result, 'tmux_session': session, 'tmux_socket': luna['tmux_socket'],
                     'luna_model': luna['model'], 'launched': created,
+                    'workspace_trust': args.workspace_trust if created else 'existing-session',
                     'state': ('resuming' if created else 'bound') if luna['codex_thread_id'] else 'awaiting_actor_binding', 'watcher': watcher})
     finally:
         store.close()
@@ -359,6 +366,9 @@ def build_parser():
     start.add_argument('--astra-thread')
     start.add_argument('--luna-model', default=os.environ.get('ACLA_LUNA_MODEL', DEFAULT_MODEL))
     start.add_argument('--interval', type=int, default=300)
+    start.add_argument('--workspace-trust', choices=('trusted', 'configured'), default='trusted',
+                       help='Trust the selected actor workspace for this launch (default), '
+                            'or use existing Codex trust configuration and prompts')
     bind = command('bind-session', cmd_bind); bind.add_argument('--luna-id', required=True)
     for name, handler in [('send', cmd_send), ('send-reply', cmd_luna_message), ('ask-question', cmd_luna_message), ('approve', cmd_approve)]:
         c = command(name, handler)

@@ -19,8 +19,16 @@ credentials are needed. There is no terminal-paste delivery.
   This version is not a cross-machine inbox service.
 
 The actor uses workspace-write with on-request approvals and write access to the
-private inbox directory. Login, workspace trust, or other approval prompts can
-require owner attention. The plugin does not bypass them.
+private inbox directory. ACLA trusts the selected actor workspace for each launch
+and resume by default, using a Codex CLI configuration override. This applies to
+ACLA launches in any directory, including newly created worktrees. Trust allows
+Codex to load that workspace's project configuration and instructions.
+
+The override is scoped to the actor invocation; it does not edit your Codex
+configuration or trust other directories for unrelated Codex sessions. Use
+`--workspace-trust configured` to use your existing Codex trust settings and
+interactive prompts instead. Login, hook trust, and command approvals remain
+separate and can require owner attention.
 
 ## CLI example
 
@@ -73,6 +81,13 @@ The original unbound actor receives bootstrap again if its process disappeared.
 `stop-actor --luna-id ID` stops only that actor's owned tmux session and retains
 its conversation. The optional `ACLA_TMUX_SOCKET` selects the isolated tmux server
 (default `acla`).
+
+An actor already waiting at a trust prompt keeps its original launch settings.
+After upgrading, the bound Astra can use `stop-actor --luna-id ID`, then repeat
+the original `run-start` command using the updated helper. The launcher applies
+workspace trust before starting Codex; no terminal keystrokes are needed. Keep
+the same state path, run ID, actor name, workspace, model, and handoff. A bound
+actor resumes its saved conversation; an unbound actor receives bootstrap again.
 
 Delivery claims are transactional, and the delivery worker is locked per store.
 A successful queue call records transport acceptance, not model completion.
