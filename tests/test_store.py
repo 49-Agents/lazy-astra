@@ -162,10 +162,13 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=1").fetchone()["legacy"], 1)
         self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=2").fetchone()["legacy"], 0)
         self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=3").fetchone()["legacy"], 1)
+        self.assertEqual(self.store.db.execute("SELECT delivery_state FROM messages WHERE id=5").fetchone()["delivery_state"], "uncertain")
         self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=5").fetchone()["legacy"], 1)
         self.assertEqual(self.store.db.execute("SELECT delivery_state FROM messages WHERE id=4").fetchone()["delivery_state"], "pending")
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM inbox_notifications WHERE recipient_id='old-recipient'").fetchone()[0], 1)
-        self.assertEqual([m['id'] for m in self.store.claim_inbox('old-recipient')['messages']], [2, 4])
+        self.store.resolve_delivery(5, retry=True)
+        self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=5").fetchone()[0], 0)
+        self.assertEqual([m['id'] for m in self.store.claim_inbox('old-recipient')['messages']], [2, 4, 5])
 
     def test_claim_ack_reply_and_legacy_targeting(self):
         ids = start(self.store)
@@ -202,6 +205,30 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(self.store.notification_batch()), 1)
         recovered = self.store.claim_inbox(ids['luna_id'])
         self.assertEqual([m['id'] for m in recovered['messages']], [batch['messages'][0]['id']])
+
+    def test_partial_batch_expiry_rearms_sent_wakeup_in_watcher_and_next_paths(self):
+        ids = start(self.store)
+        self.store.send(ids['thread_id'], ids['astra_id'], 'first', 'expiry-first')
+        self.store.send(ids['thread_id'], ids['astra_id'], 'second', 'expiry-second')
+        original = self.store.notification_batch()[0]['notification_id']
+        self.store.notification_dispatching(ids['luna_id'], original)
+        self.store.notification_result(ids['luna_id'], original, 'sent')
+        batch = self.store.claim_inbox(ids['luna_id'], limit=1)
+        self.store.db.execute("UPDATE messages SET inbox_claimed_at='2000-01-01T00:00:00+00:00' WHERE id=?", (batch['messages'][0]['id'],))
+        self.store.db.commit()
+        self.assertEqual(self.store.recover_inbox_claims(), 1)
+        pending = self.store.notification_batch()
+        self.assertEqual(len(pending), 1)
+        self.assertNotEqual(pending[0]['notification_id'], original)
+
+        self.store.notification_dispatching(ids['luna_id'], pending[0]['notification_id'])
+        self.store.notification_result(ids['luna_id'], pending[0]['notification_id'], 'sent')
+        batch = self.store.claim_inbox(ids['luna_id'], limit=1)
+        self.store.db.execute("UPDATE messages SET inbox_claimed_at='2000-01-01T00:00:00+00:00' WHERE id=?", (batch['messages'][0]['id'],))
+        self.store.db.commit()
+        again = self.store.claim_inbox(ids['luna_id'], limit=1, lease_seconds=900)
+        self.assertEqual(len(again['messages']), 1)
+        self.assertEqual(len(self.store.notification_batch()), 1)
 
     def test_recipient_wakeup_coalesces_and_reply_to_removes_stale_wakeup(self):
         ids = start(self.store)
@@ -242,6 +269,19 @@ class StoreTests(unittest.TestCase):
         current = self.store.notification_batch()
         self.assertEqual(len(current), 1)
         self.assertEqual(current[0]['notification_id'], n2)
+
+    def test_new_arrival_after_sent_batch_gets_fresh_generation(self):
+        ids = start(self.store)
+        first = self.store.send(ids['thread_id'], ids['astra_id'], 'first', 'after-sent-1')
+        n1 = self.store.notification_batch()[0]['notification_id']
+        self.store.notification_dispatching(ids['luna_id'], n1)
+        self.store.notification_result(ids['luna_id'], n1, 'sent')
+        batch = self.store.claim_inbox(ids['luna_id'])
+        self.store.acknowledge(ids['luna_id'], batch['token'], [first['id']])
+        self.store.send(ids['thread_id'], ids['astra_id'], 'later', 'after-sent-2')
+        current = self.store.notification_batch()
+        self.assertEqual(len(current), 1)
+        self.assertNotEqual(current[0]['notification_id'], n1)
 
     def test_partial_ack_does_not_wake_for_other_messages_still_leased(self):
         ids = start(self.store)

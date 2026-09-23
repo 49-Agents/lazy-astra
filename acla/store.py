@@ -94,6 +94,7 @@ class Store:
         self.db.execute("UPDATE messages SET delivery_state='delivered' WHERE delivered_at IS NOT NULL AND delivery_state='pending'")
         if not had_legacy_marker:
             # Old never-dispatched work stays eligible; accepted history is not replayed.
+            self.db.execute("UPDATE messages SET delivery_state='uncertain',delivery_error=COALESCE(delivery_error,'dispatch interrupted during inbox migration'),delivery_claim=NULL,delivery_claimed_at=NULL,delivery_worker=NULL WHERE delivered_at IS NULL AND delivery_state='dispatching'")
             self.db.execute("UPDATE messages SET delivery_state='pending',delivery_claim=NULL,delivery_claimed_at=NULL,delivery_worker=NULL WHERE delivered_at IS NULL AND delivery_state='claimed'")
             self.db.execute("UPDATE messages SET legacy=0 WHERE delivered_at IS NULL AND delivery_state='pending'")
             recipients = self.db.execute("SELECT DISTINCT m.recipient_id FROM messages m JOIN agents a ON a.id=m.recipient_id WHERE m.legacy=0 AND m.handled_at IS NULL AND m.delivered_at IS NULL").fetchall()
@@ -357,6 +358,11 @@ class Store:
             self.db.execute("INSERT INTO inbox_notifications(recipient_id,notification_id,state,created_at) VALUES(?,?,'pending',?) ON CONFLICT(recipient_id) DO UPDATE SET notification_id=excluded.notification_id,state='pending',token=NULL,claimed_at=NULL,created_at=excluded.created_at,error=NULL",
                             (recipient_id, new_id(), now()))
 
+    def _rearm_sent_notification(self, recipient_id: str) -> None:
+        pending = self.db.execute("SELECT 1 FROM messages WHERE recipient_id=? AND legacy=0 AND handled_at IS NULL AND inbox_token IS NULL LIMIT 1", (recipient_id,)).fetchone()
+        if pending:
+            self.db.execute("UPDATE inbox_notifications SET notification_id=?,state='pending',created_at=?,claimed_at=NULL,error=NULL WHERE recipient_id=? AND state='sent'", (new_id(),now(),recipient_id))
+
     def claim_inbox(self, recipient_id: str, limit: int = 20, message_id: int | None = None, lease_seconds: int = 900) -> dict:
         if limit < 1 or limit > 100:
             raise ValueError("inbox limit must be between 1 and 100")
@@ -365,8 +371,10 @@ class Store:
         self.db.execute("BEGIN IMMEDIATE")
         try:
             # Expired claims become available and refresh the coalesced wakeup.
-            self.db.execute("UPDATE messages SET inbox_token=NULL,inbox_claimed_at=NULL WHERE recipient_id=? AND handled_at IS NULL AND inbox_claimed_at<?", (recipient_id, cutoff))
+            expired = self.db.execute("UPDATE messages SET inbox_token=NULL,inbox_claimed_at=NULL WHERE recipient_id=? AND handled_at IS NULL AND inbox_claimed_at<?", (recipient_id, cutoff)).rowcount
             self._refresh_notification(recipient_id)
+            if expired:
+                self._rearm_sent_notification(recipient_id)
             if message_id is not None:
                 rows = self.db.execute("SELECT * FROM messages WHERE id=? AND recipient_id=? AND handled_at IS NULL AND inbox_token IS NULL", (message_id,recipient_id)).fetchall()
             else:
@@ -427,6 +435,7 @@ class Store:
             cur = self.db.execute("UPDATE messages SET inbox_token=NULL,inbox_claimed_at=NULL WHERE inbox_token IS NOT NULL AND inbox_claimed_at<?", (cutoff,))
             for recipient in recipients:
                 self._refresh_notification(recipient)
+                self._rearm_sent_notification(recipient)
             self.db.commit(); return cur.rowcount
         except Exception:
             self.db.rollback(); raise
@@ -561,17 +570,36 @@ class Store:
         run = self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if not run:
             raise ValueError(f"unknown run: {run_id}")
+        astra_id = run["astra_id"] or self.db.execute("SELECT astra_id FROM pairs WHERE run_id=? LIMIT 1", (run_id,)).fetchone()[0]
+        participant_ids = [astra_id] + [r[0] for r in self.db.execute("SELECT luna_id FROM pairs WHERE run_id=? ORDER BY luna_id", (run_id,))]
+        recipients = []
+        for recipient_id in participant_ids:
+            agent = self.agent(recipient_id)
+            counts = self.db.execute("""SELECT
+                SUM(CASE WHEN m.handled_at IS NULL AND (m.legacy=0 OR m.delivered_at IS NULL) THEN 1 ELSE 0 END) AS unhandled,
+                SUM(CASE WHEN m.handled_at IS NULL AND m.legacy=0 AND m.inbox_token IS NULL THEN 1 ELSE 0 END) AS available,
+                SUM(CASE WHEN m.handled_at IS NULL AND m.inbox_token IS NOT NULL THEN 1 ELSE 0 END) AS claimed,
+                SUM(CASE WHEN m.handled_at IS NULL AND m.delivery_state='uncertain' AND m.delivered_at IS NULL THEN 1 ELSE 0 END) AS uncertain_messages
+                FROM messages m JOIN threads t ON t.id=m.thread_id WHERE t.run_id=? AND m.recipient_id=?""", (run_id,recipient_id)).fetchone()
+            notification = self.db.execute("SELECT state,error FROM inbox_notifications WHERE recipient_id=?", (recipient_id,)).fetchone()
+            recipients.append({"recipient_id": recipient_id, "kind": agent["kind"], "name": agent["name"],
+                "unhandled_messages": counts["unhandled"] or 0, "available_messages": counts["available"] or 0,
+                "claimed_messages": counts["claimed"] or 0, "uncertain_messages": counts["uncertain_messages"] or 0,
+                "notification_state": notification["state"] if notification else None,
+                "notification_error": notification["error"] if notification else None})
         streams = self.db.execute("""SELECT p.*, a.name AS astra_name, a.tmux_session AS astra_session,
             a.codex_thread_id AS astra_codex_thread_id, a.codex_home AS astra_codex_home,
             l.name AS luna_name, l.tmux_session AS luna_session, l.codex_thread_id AS luna_codex_thread_id,
             l.codex_home AS luna_codex_home, l.model AS luna_model, t.id AS thread_id,
-            (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.delivered_at IS NULL) AS pending_messages,
+            (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND (m.legacy=0 OR m.delivered_at IS NULL)) AS pending_messages,
+            (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND m.legacy=0 AND m.inbox_token IS NULL) AS pending_available_messages,
+            (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND m.inbox_token IS NOT NULL) AS pending_claimed_messages,
             (SELECT m.delivery_error FROM messages m WHERE m.thread_id=t.id AND m.delivery_error IS NOT NULL ORDER BY m.id DESC LIMIT 1) AS delivery_error,
             (SELECT n.state FROM inbox_notifications n WHERE n.recipient_id=l.id) AS inbox_notification_state,
             (SELECT n.error FROM inbox_notifications n WHERE n.recipient_id=l.id) AS inbox_notification_error
             FROM pairs p JOIN agents a ON a.id=p.astra_id JOIN agents l ON l.id=p.luna_id
             LEFT JOIN threads t ON t.luna_id=p.luna_id WHERE p.run_id=?""", (run_id,)).fetchall()
-        return {"run": dict(run), "streams": [dict(row) for row in streams]}
+        return {"run": dict(run), "recipients": recipients, "streams": [dict(row) for row in streams]}
 
     def set_run_state(self, run_id: str, state: str) -> None:
         self.db.execute("UPDATE runs SET state=?, updated_at=? WHERE id=?", (state, now(), run_id))

@@ -137,13 +137,60 @@ class CliWorkflowTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
             self.invoke("bind-session", "--luna-id", actor["luna_id"])
         self.invoke("send", "--thread-id", actor["thread_id"], "--body", "owner task", "--idempotency-key", "inbox-identity")
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
+            self.invoke("send-reply", "--luna-id", actor["luna_id"], "--body", "actor response", "--idempotency-key", "inbox-status")
+        store = self.store()
+        try:
+            for recipient_id in (actor['astra_id'], actor['luna_id']):
+                nid = store.db.execute("SELECT notification_id FROM inbox_notifications WHERE recipient_id=?", (recipient_id,)).fetchone()[0]
+                store.notification_dispatching(recipient_id, nid)
+                store.notification_result(recipient_id, nid, 'uncertain', 'synthetic ambiguity')
+        finally:
+            store.close()
+        status = self.invoke("status", "--run-id", self.run_id)
+        recipients = {row['recipient_id']: row for row in status['recipients']}
+        self.assertEqual(recipients[actor['luna_id']]['available_messages'], 1)
+        self.assertEqual(recipients[actor['astra_id']]['available_messages'], 1)
+        self.assertEqual(recipients[actor['luna_id']]['notification_error'], 'synthetic ambiguity')
+        self.assertEqual(recipients[actor['astra_id']]['notification_error'], 'synthetic ambiguity')
         as_astra = self.invoke("inbox", "next")
-        self.assertEqual(as_astra['messages'], [])
+        self.assertEqual(len(as_astra['messages']), 1)
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.astra_thread}):
+            after_claim = self.invoke("status", "--run-id", self.run_id)
+        self.assertEqual({r['recipient_id']: r for r in after_claim['recipients']}[actor['astra_id']]['claimed_messages'], 1)
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
             as_luna = self.invoke("inbox", "next")
             self.assertEqual(len(as_luna['messages']), 1)
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.astra_thread}):
             self.invoke_fails("inbox", "acknowledge", "--token", as_luna['token'], "--message-id", str(as_luna['messages'][0]['id']), contains="not claimed")
+
+    def test_watcher_poll_rearms_after_partial_claim_expires(self):
+        actor = self.start_actor()
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
+            self.invoke("bind-session", "--luna-id", actor["luna_id"])
+        for ix in (1, 2):
+            self.invoke("send", "--thread-id", actor["thread_id"], "--body", f"work {ix}", "--idempotency-key", f"watcher-expiry-{ix}")
+        with mock.patch("acla.cli.verify_destination"), mock.patch("acla.cli.queue_message") as queue:
+            self.invoke("poll")
+        self.assertEqual(queue.call_count, 1)
+        store = self.store()
+        try:
+            before = store.db.execute("SELECT notification_id FROM inbox_notifications WHERE recipient_id=?", (actor['luna_id'],)).fetchone()[0]
+            batch = store.claim_inbox(actor['luna_id'], limit=1)
+            store.db.execute("UPDATE messages SET inbox_claimed_at='2000-01-01T00:00:00+00:00' WHERE id=?", (batch['messages'][0]['id'],))
+            store.db.commit()
+        finally:
+            store.close()
+        with mock.patch("acla.cli.verify_destination"), mock.patch("acla.cli.queue_message") as queue:
+            self.invoke("poll")
+        self.assertEqual(queue.call_count, 1)
+        store = self.store()
+        try:
+            current = store.db.execute("SELECT notification_id,state FROM inbox_notifications WHERE recipient_id=?", (actor['luna_id'],)).fetchone()
+            self.assertNotEqual(current['notification_id'], before)
+            self.assertEqual(current['state'], 'sent')
+        finally:
+            store.close()
 
     def test_two_actors_route_enveloped_messages_to_their_bound_threads(self):
         one = self.start_actor("parser", self.workspace_one)
@@ -265,6 +312,16 @@ class CliWorkflowTests(unittest.TestCase):
         self.assertEqual(len(delivered["delivered"]), 1)
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
             batch = self.invoke("inbox", "next")
+        store = self.store()
+        try:
+            self.assertIsNone(store.db.execute("SELECT 1 FROM inbox_notifications WHERE recipient_id=?", (actor['luna_id'],)).fetchone())
+        finally:
+            store.close()
+        launch_count = self.mock_launch.call_count
+        crash_recovery = self.start_actor()
+        self.assertTrue(crash_recovery['launched'])
+        self.assertEqual(self.mock_launch.call_count, launch_count + 1)
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
             self.invoke("inbox", "acknowledge", "--token", batch['token'], "--message-id", str(batch['messages'][0]['id']))
         launch_count = self.mock_launch.call_count
         done = self.start_actor()

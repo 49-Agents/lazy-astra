@@ -112,7 +112,9 @@ Queue notifications contain no full body. They only say to read `inbox next`;
 several messages for one recipient coalesce into one wake-up across review threads.
 The command returns full messages and an expiring claim token, bound to the current
 native Codex thread and home. Process only returned IDs and acknowledge exactly the
-IDs processed with `inbox acknowledge --token TOKEN --message-id ID`. The default
+IDs processed with `inbox acknowledge --token TOKEN --message-id ID`. Save the token
+and IDs before lengthy work. After acknowledging each processed batch, continue
+calling `inbox next` until it returns empty. The default
 batch is 20 (maximum 100); claims expire after 15 minutes. An empty inbox or delayed
 duplicate wake-up requires no chat response and no actor message. Do not act on a
 delayed full envelope from an older workflow until reconciling its message ID with

@@ -110,7 +110,11 @@ Claims are recipient-bound to the current Codex thread and home, limited to 1–
 messages (default 20), and expire after 15 minutes. Acknowledge only processed IDs
 with the returned token. A reply can use `--reply-to ID` to mark that incoming
 message handled in the same transaction as sending; approval never consumes other
-messages implicitly. Empty or delayed wake-ups must be silent.
+messages implicitly. Save claim tokens and IDs before lengthy work, acknowledge each
+processed batch, then keep calling `inbox next` until empty. Empty or delayed wake-ups
+must be silent. `status` reports unhandled, available, claimed, and uncertain message
+counts plus notification state/error for each run recipient; its compatibility
+`pending_messages` value now means unhandled messages in that stream.
 
 Delivery claims are transactional, and the delivery worker is locked per store.
 A successful queue call records transport acceptance, not model completion.

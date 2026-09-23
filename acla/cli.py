@@ -29,7 +29,9 @@ doing the affected work. State the blocker or decision and relevant facts; do no
 choose an option yourself or treat silence as approval.
 Do not send interim reports, progress updates, milestone summaries, acknowledgements,
 or periodic check-ins. Read full incoming messages only through the bound helper's
-inbox next; acknowledge only exact processed IDs with inbox acknowledge and its token.
+inbox next; save its token and message IDs before lengthy work. Acknowledge only the
+exact processed IDs with inbox acknowledge and its token, then drain further inbox next
+batches until empty.
 Do not act directly from delayed full envelopes without reconciling their ID through
 inbox next --message-id ID. Delayed wakeups with an empty inbox are silent: no chat
 acknowledgement and no actor message. Use --reply-to ID to atomically consume only
@@ -110,6 +112,8 @@ Read incoming work only through:
 {command} inbox next
 After processing the returned IDs, acknowledge exactly those IDs with:
 {command} inbox acknowledge --token <claim-token> --message-id <ID> [--message-id <ID> ...]
+Save the token and IDs before lengthy work. After acknowledging a processed batch,
+repeat inbox next until it returns no messages.
 Link a response to the consumed message using --reply-to <ID> on send-reply/ask-question.
 Use the same key and identical text for an uncertain retry. Do not ask the human to copy your report.
 Incoming "From the user (via the review workflow)" messages carry the owner's delegated review direction.
@@ -171,7 +175,10 @@ def cmd_run_start(args):
                 luna_model=args.luna_model, handoff=handoff)
             luna = store.agent(result['luna_id'])
             approved = store.db.execute('SELECT approved FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['approved']
-            pending = store.db.execute('SELECT COUNT(*) FROM inbox_notifications WHERE recipient_id=?', (luna['id'],)).fetchone()[0]
+            pending = store.db.execute("""SELECT COUNT(*) FROM messages m JOIN threads t ON t.id=m.thread_id
+                WHERE t.luna_id=? AND m.recipient_id=? AND m.handled_at IS NULL
+                AND (m.legacy=0 OR m.inbox_token IS NOT NULL OR m.delivery_state='pending')""",
+                (luna['id'], luna['id'])).fetchone()[0]
             if approved and not pending:
                 output({**result, 'state': 'approved', 'launched': False})
                 return
