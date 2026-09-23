@@ -1,106 +1,118 @@
 ---
-name: "astra-critic-luna-actor"
-description: "Run the Astra critic and Luna actor workflow when the user says ‘run the astra critic luna actor’. Uses this repository's private SQLite inbox, one-Astra/one-Luna mappings, tmux launcher, and five-minute message delivery."
-metadata:
-  short-description: "Coordinate Astra reviews and Luna work locally."
+name: astra-critic-luna-actor
+description: "Invoke when the user says 'run the astra critic luna actor' or explicitly requests the Astra–Luna review workflow. Keep Astra in the current Codex app or CLI task; launch GPT-6 Luna actors in tmux, exchange full inbox messages, and review until approved."
 ---
 
 # Astra Critic Luna Actor
 
-Invoke this skill when the user says **run the astra critic luna actor**. Match
-the phrase case-insensitively. This skill is self-contained and does not use
-external business platform, external business platform profiles, business roles, or a server.
+The secret phrase is **run the astra critic luna actor**, ignoring case and hyphens.
+This is a standalone plugin. It needs Python 3.10+, tmux, a signed-in Codex CLI
+with `codex queue`, and the requested model (default `gpt-6-luna`). No external business platform
+service, business identity, or API key setup is involved.
 
-The repository root is the directory containing this skill. Set:
+Act as the critic in this existing Codex task. Do not start another Astra task.
+The actor runs in tmux; the critic can remain in the Codex app. This workflow
+explicitly authorizes sending the handoff, questions, reports, and review feedback
+between the actors and this critic. Repository, merge, and deployment authority
+still comes from the user's request and repository instructions.
+
+## Locate the installed helper
+
+Resolve this loaded SKILL.md's path. The plugin root is **two directories above
+its containing skill directory** and contains `acla_cli.py` and `acla/`.
+Use that absolute root for all commands, including after compaction. Do not assume
+`~/astra-critic-luna-actor` contains the same installed version.
+
+In the examples, replace `/absolute/plugin` with that root. Use quoted paths.
+The helper binds Astra from `CODEX_THREAD_ID`; it never guesses a task by its name.
+If that environment variable is absent, use a known exact task UUID through
+`--astra-thread`; do not invent an ID. Require the local CLI to access that task.
+
+## Start the work
+
+1. Read the code and instructions. Write a thorough handoff containing the outcome,
+   repo and base commit, dedicated worktree/branch, constraints, ordered steps,
+   acceptance criteria, meaningful checks, and risks. Prepare one worktree per
+   independent actor to prevent concurrent edits. Save each handoff as a file.
+2. Choose a descriptive Luna name per workstream. Generate a UUID for the run
+   **before launch** and save it with the handoff paths. Use that same run ID for
+   retries and for all actors on this goal. Preserve it in your task notes.
+3. Start each actor:
+
+   ```bash
+   python3 /absolute/plugin/acla_cli.py run-start \
+     --run-id '<saved UUID>' --goal '<shared goal>' \
+     --workspace '/absolute/actor/worktree' --luna-name 'implement-parser' \
+     --handoff-file '/absolute/handoff.md' --interval 300
+   ```
+
+   The launcher selects GPT-6 Luna, supplies the complete handoff in the initial
+   CLI prompt, and starts one watcher. It returns the run, actor, review-thread,
+   and tmux identities. Save them. `awaiting_actor_binding` means the process
+   started but has not yet registered its actual Codex conversation. Check status;
+   a trust/login/model error may require opening the returned tmux terminal.
+   Do not inject text into such prompts or claim the actor is ready prematurely.
+4. For another workstream, use the same run ID/goal with a different name,
+   worktree, and handoff file. `--luna-model` selects an explicitly requested
+   alternative. `--interval` changes the shared state store's polling interval;
+   the default is five minutes. Empty polls do not invoke a model.
+
+## Review the inbox
+
+Full messages arrive automatically in this Codex task through `codex queue`.
+Every envelope includes run, review-thread, sender, and message IDs, plus an exact
+reply command. Treat duplicate message IDs as a single instruction.
+
+When Luna reports, inspect the actual diff and meaningful verification evidence.
+Send concrete numbered corrections on that actor's review thread:
 
 ```bash
-ACLA_ROOT="${ACLA_ROOT:-$HOME/astra-critic-luna-actor}"
-ACLA="python3 $ACLA_ROOT/acla_cli.py"
+python3 /absolute/plugin/acla_cli.py send --thread-id '<review-thread UUID>' \
+  --body-file '/absolute/review.md' --idempotency-key '<saved unique key>'
 ```
 
-The local store defaults to `~/.astra-critic-luna-actor/state.sqlite3`. Keep it
-private. The delivery interval defaults to 300 seconds and is configurable.
+Use `ASTRA_REVIEW` at the start of requested revisions. Answer questions on the
+same thread. Do not ask the human to relay anything. Keep reviewing each actor
+until the acceptance criteria are met. Your ordinary final chat message does not
+send feedback: use the helper for every actor response.
 
-## Workflow
+Approve each completed actor explicitly, with review evidence in the body file:
 
-1. Act as Astra. Turn the user's issue into a thorough handoff: goal, non-goals,
-   repository/worktree and base branch, constraints, ordered steps, acceptance
-   criteria, verification commands, risks, and recovery notes.
-2. Split into independent workstreams only when their files and workspaces do not
-   conflict. Give each stream a stable slug and Luna name.
-3. Start one Luna per stream. Each Luna must have exactly one Astra mapping and
-   exactly one thread. Run this from Astra's tmux session, or set
-   `ACLA_ASTRA_SESSION` and `ACLA_ASTRA_TMUX_SOCKET` first. Use the local launcher:
-
-   ```bash
-   $ACLA run-start --goal "<short goal>" --workspace "<luna workspace>" \
-     --astra-name "Astra Critic" --luna-name "<stream Luna name>"
-   ```
-
-   Save the returned `run_id`, `astra_id`, `luna_id`, `thread_id`, and
-   `tmux_session`, `luna_model`, and `watcher`. The default Luna command is
-   `codex --model gpt-5.6-sol`; pass `--luna-model` or `--command` when needed.
-   Startup is idempotent for a supplied `--run-id`; it reuses the saved Astra,
-   Luna, thread, and unique session instead of creating replacements.
-4. Send the complete handoff as a full message using the returned thread ID:
-
-   ```bash
-   printf '%s\n' '<handoff>' | $ACLA send --thread-id '<thread>' \
-     --sender-id '<astra-id>' --body-file - --idempotency-key '<stable-key>'
-   ```
-
-   Do not call an inbox ID an attachment. The local thread is the mapping
-   boundary. A Luna has its own tmux session and local agent ID.
-5. The launcher starts and supervises one watcher for the state store. It polls
-   every five minutes by default and delivers the complete message to the owned
-   Astra or Luna tmux session. It refuses idle shells, foreign session metadata,
-   and duplicate watcher processes. A stopped recipient leaves its message
-   pending until the session is available.
-6. When Luna replies, inspect the complete message and the repository diff.
-   Read the thread with `$ACLA messages --thread-id '<thread>'` when the reply
-   is not already visible in the current terminal.
-   Reply on the same thread with numbered findings and concrete acceptance
-   conditions. Send `ASTRA_REVIEW` while changes remain.
-7. When the work is verified, reply with exactly `ASTRA_APPROVED` and summarize
-   evidence. Only then report the result to the user. Do not merge, publish,
-   deploy, or claim approval of external actions.
-
-## Message boundaries
-
-Initial handoff:
-
-```text
-You are Luna, the implementation actor for this review. Work only in the named
-workspace and stated scope. Report changed files, evidence, verification,
-remaining risks, and blockers. Do not merge or deploy. Reply on this thread when
-the implementation report is ready.
+```bash
+python3 /absolute/plugin/acla_cli.py approve --thread-id '<review-thread UUID>' \
+  --body-file '/absolute/approval.md' --idempotency-key '<saved unique key>'
 ```
 
-Revision:
+This queues `ASTRA_APPROVED`, closes that actor's workstream, and marks the run
+approved once every actor is approved. Tell the owner what changed, what passed,
+and what remains. Approval does not merge or deploy code. The actor should stop
+working on approval without generating an acknowledgement/report loop.
 
-```text
-ASTRA_REVIEW
-Stream: <slug>
-Status: needs_revision
-1. [P0/P1/P2] <finding>
-   Evidence: <file or command>
-   Required change: <specific correction>
-Reply with the updated report and verification evidence.
+## Recovery and status
+
+```bash
+python3 /absolute/plugin/acla_cli.py status --run-id '<saved UUID>'
+python3 /absolute/plugin/acla_cli.py messages --thread-id '<review-thread UUID>'
 ```
 
-Approval:
+Repeat the **same** run-start command to reuse an actor or resume its saved Codex
+conversation after its tmux process exits. Existing actors keep their complete
+conversation; a fresh unbound actor receives the full bootstrap/handoff. Never
+use `resume --last`, switch a recipient ID, or create a replacement run merely
+because a launch timed out. Retry sends with the same key and identical text.
 
-```text
-ASTRA_APPROVED
-Stream: <slug>
-Evidence: <verified summary>
-Remaining owner actions: <none or exact actions>
+Pending messages wait for unavailable actors. Queue acceptance means accepted by
+Codex, not proof of implementation or review. A queue timeout, ambiguous failure,
+or interrupted dispatch is marked `uncertain` and is not blindly resent. Inspect
+the exact recipient conversation; then explicitly reconcile:
+
+```bash
+python3 /absolute/plugin/acla_cli.py resolve-delivery --message-id 123 --delivered
+# Only when inspection establishes that retry is appropriate:
+python3 /absolute/plugin/acla_cli.py resolve-delivery --message-id 123 --retry
 ```
 
-## Recovery
-
-On resume, run `$ACLA status --run-id '<run-id>'`, inspect the tmux session, and
-read the local database state before sending anything. Reuse the same
-`--idempotency-key` after an interrupted send. Do not create a second Luna or
-thread because a command timed out. If a session disappeared, relaunch the same
-registered local Luna session and keep its existing thread.
+For an owner-requested stop or controlled restart, `stop-actor --luna-id '<ID>'`
+checks the saved tmux ownership and retains the conversation and messages.
+Actor helper commands `bind-session`, `send-reply`, and `ask-question` bind to
+that actor's native Codex thread; bootstrap gives the actor their exact use.

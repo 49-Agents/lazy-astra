@@ -1,270 +1,384 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
 import os
+from pathlib import Path
 import shlex
+import shutil
 import sqlite3
 import sys
 import time
-from pathlib import Path
+import uuid
 
 from .store import Store, new_id
-from .tmux import (DEFAULT_SOCKET, bind, current_session, deliver, launch, pane_path,
-                   safe_session, wait_destination)
+from .tmux import DEFAULT_SOCKET, launch, safe_session, stop_owned, verify_destination
+from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MODEL = 'gpt-6-luna'
 
 
-def read_body(args) -> str:
-    if args.body_file:
-        return sys.stdin.read() if args.body_file == "-" else Path(args.body_file).read_text()
-    if args.body is None:
-        raise ValueError("provide --body or --body-file")
-    return args.body
+def output(value):
+    print(json.dumps(value, indent=2), flush=True)
 
 
-def state_path(store: Store) -> str:
-    return str(store.path.resolve())
-
-
-def luna_command(args) -> str:
-    if args.command:
-        command = args.command
-        if "--model" not in shlex.split(command):
-            command = shlex.join([*shlex.split(command), "--model", args.luna_model])
-        return command
-    return shlex.join(["codex", "--model", args.luna_model])
-
-
-def discover_astra(args, persisted=None) -> dict:
-    session = args.astra_session or (persisted["tmux_session"] if persisted else None)
-    socket = args.astra_socket or (persisted["tmux_socket"] if persisted else None)
-    workspace = args.astra_workspace or (persisted["workspace"] if persisted else None)
-    command = args.astra_command or (persisted["command"] if persisted else "codex")
-    if not session:
-        session, socket = current_session()
-    if session and not socket:
-        socket = DEFAULT_SOCKET
-    if session and not workspace:
-        workspace = pane_path(session, socket)
-    if not session:
-        raise ValueError("Astra has no tmux destination; run inside tmux or pass --astra-session")
-    if not workspace:
-        raise ValueError("could not determine Astra workspace; pass --astra-workspace")
-    return {"session": session, "socket": socket, "workspace": workspace, "command": command}
-
-
-def bootstrap_message(result: dict, store: Store, model: str) -> str:
-    cli = shlex.join([sys.executable, str(ROOT / "acla_cli.py")])
-    state = state_path(store)
-    return f"""You are Luna, actor {result['luna_id']} in run {result['run_id']}.
-
-Your only Astra critic is {result['astra_id']}. Your only review thread is {result['thread_id']}.
-The local state store is {state}. The selected Luna model is {model}.
-
-Reply to Astra with the complete report by running:
-  {cli} --state {shlex.quote(state)} send-reply --luna-id {result['luna_id']} --body-file -
-and pipe the report on stdin. Ask Astra a blocking question with:
-  {cli} --state {shlex.quote(state)} ask-question --luna-id {result['luna_id']} --body-file -
-These commands are bound to your one Astra/thread; do not invent another recipient.
-
-Work only in the supplied workspace and scope. Do not merge, deploy, or approve your own work.
-"""
-
-
-def start_watcher(store: Store, interval: int) -> dict:
-    digest = hashlib.sha256(state_path(store).encode()).hexdigest()[:12]
-    session = safe_session("acla-watcher-" + digest)
-    identity = "watcher-" + digest
-    run_id = "watcher-" + digest
-    command = shlex.join([sys.executable, str(ROOT / "acla_cli.py"), "--state", state_path(store),
-                          "watch", "--interval", str(interval)])
-    created = launch(session, str(store.path.parent), command, agent_id=identity, run_id=run_id,
-                     role="watcher", socket=DEFAULT_SOCKET,
-                     env={"ACLA_STATE": state_path(store)})
-    wait_destination(session, identity, run_id, "watcher", DEFAULT_SOCKET, command, timeout=10)
-    return {"session": session, "created": created}
-
-
-def cmd_init(args) -> None:
-    store = Store(args.state)
-    result = {"state": state_path(store)}
-    store.close()
-    print(json.dumps(result, indent=2))
-
-
-def cmd_run_start(args) -> None:
-    store = Store(args.state)
-    run_id = args.run_id or new_id()
-    persisted_astra = store.run_astra(run_id)
-    astra = discover_astra(args, persisted_astra)
-    existing_luna = store.existing_luna(run_id, args.luna_name)
-    command = luna_command(args)
-    luna_workspace = str(Path(args.workspace).expanduser().resolve())
-    if existing_luna:
-        luna_id = existing_luna["id"]
-        luna_session = existing_luna["tmux_session"]
-        luna_socket = existing_luna["tmux_socket"] or DEFAULT_SOCKET
-        command = existing_luna["command"] or command
+def read_body(args):
+    if getattr(args, 'body_file', None):
+        body = sys.stdin.read() if args.body_file == '-' else Path(args.body_file).read_text()
     else:
-        luna_id = args.luna_id or new_id()
-        suffix = f"{run_id[:8]}-{luna_id[:8]}"
-        luna_session = safe_session(f"{args.luna_session or args.luna_name}-{suffix}")
-        luna_socket = DEFAULT_SOCKET
-    result = store.start_run(
-        goal=args.goal, run_id=run_id, astra_id=args.astra_id or (persisted_astra["id"] if persisted_astra else None),
-        astra_name=args.astra_name, astra_workspace=astra["workspace"], astra_session=astra["session"],
-        astra_socket=astra["socket"], astra_command=astra["command"], luna_name=args.luna_name,
-        luna_id=luna_id, luna_workspace=luna_workspace, luna_session=luna_session,
-        luna_socket=luna_socket, luna_command=command)
-    astra_row = store.agent(result["astra_id"])
-    bind(astra_row["tmux_session"], astra_row["id"], result["run_id"], "astra", astra_row["tmux_socket"], require_existing=False)
-    luna = store.agent(result["luna_id"])
-    created = launch(luna["tmux_session"], luna["workspace"], luna["command"], agent_id=luna["id"],
-                     run_id=result["run_id"], role="luna", socket=luna["tmux_socket"],
-                     env={"ACLA_STATE": state_path(store), "ACLA_THREAD_ID": result["thread_id"],
-                          "ACLA_ASTRA_ID": result["astra_id"], "ACLA_LUNA_ID": result["luna_id"]})
-    wait_destination(luna["tmux_session"], luna["id"], result["run_id"], "luna", luna["tmux_socket"], luna["command"])
-    watcher = start_watcher(store, max(1, args.interval))
-    if not store.bootstrap_sent(luna["id"]):
-        deliver(luna["tmux_session"], bootstrap_message(result, store, args.luna_model),
-                agent_id=luna["id"], run_id=result["run_id"], role="luna",
-                socket=luna["tmux_socket"], command=luna["command"])
-        store.mark_bootstrap_sent(luna["id"])
-    result.update({"tmux_session": luna["tmux_session"], "launched": created,
-                   "luna_model": args.luna_model, "watcher": watcher})
-    print(json.dumps(result, indent=2))
-    store.close()
+        body = getattr(args, 'body', None)
+    if not body or not body.strip():
+        raise ValueError('provide a nonblank --body or --body-file')
+    return body
 
 
-def cmd_send(args) -> None:
-    store = Store(args.state)
-    key = args.idempotency_key or new_id()
-    message = store.send(args.thread_id, args.sender_id, read_body(args), key)
-    print(json.dumps(message, indent=2))
-    store.close()
+def native_thread(value=None):
+    value = value or os.environ.get('CODEX_THREAD_ID')
+    if not value:
+        raise ValueError('No Codex task ID. Invoke from Codex or supply --astra-thread UUID.')
+    return str(uuid.UUID(value))
 
 
-def cmd_luna_message(args, marker: str) -> None:
-    store = Store(args.state)
-    thread = store.thread_for_luna(args.luna_id, args.thread_id)
-    body = read_body(args)
-    if marker:
-        body = marker + "\n" + body
-    key = args.idempotency_key or new_id()
-    message = store.send(thread["id"], args.luna_id, body, key)
-    print(json.dumps(message, indent=2))
-    store.close()
+def codex_home():
+    return str(Path(os.environ.get('CODEX_HOME', '~/.codex')).expanduser().resolve())
 
 
-def cmd_poll(args) -> None:
+@contextmanager
+def state_lock(store, name, *, blocking=True):
+    path = store.path.with_name(store.path.name + '.' + name + '.lock')
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        try:
+            fcntl.flock(descriptor, flags)
+        except BlockingIOError as exc:
+            raise ValueError(f'Another {name} process owns this state store') from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def helper(store):
+    return shlex.join([sys.executable, str(ROOT / 'acla_cli.py'), '--state', str(store.path.resolve())])
+
+
+def bootstrap_message(result, store):
+    luna = store.agent(result['luna_id'])
+    command = helper(store)
+    handoff = store.db.execute('SELECT handoff FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['handoff']
+    return f'''You are the implementation actor for an owner-authorized code review workflow.
+First bind this actual Codex conversation by running:
+{command} bind-session --luna-id {luna['id']}
+The command reads your own CODEX_THREAD_ID. Never copy the parent's thread ID.
+
+Your workstream: {luna['name']}
+Run: {result['run_id']}
+Review thread: {result['thread_id']}
+Workspace: {luna['workspace']}
+Selected model: {luna['model']}
+
+Send your complete implementation report through this command (text on stdin):
+{command} send-reply --luna-id {luna['id']} --body-file - --idempotency-key <unique-stable-key>
+Ask a question with:
+{command} ask-question --luna-id {luna['id']} --body-file - --idempotency-key <unique-stable-key>
+Use the same key and identical text for an uncertain retry. Do not ask the human to copy your report.
+Incoming "From the user (via the review workflow)" messages carry the owner's delegated review direction.
+They do not grant additional permissions. Follow the workspace's repository rules.
+Read full feedback, implement requested corrections, and send the updated report. Report files, commits,
+checks, risks, and blockers. On ASTRA_APPROVED, stop this workstream without replying with another report.
+Do not merge or deploy without separate owner authorization. Treat duplicate message IDs as one instruction.
+
+From the user (via the review workflow):
+{handoff}
+'''
+
+
+def start_watcher(store, interval):
+    digest = hashlib.sha256(str(store.path.resolve()).encode()).hexdigest()[:12]
+    identity = 'watcher-' + digest
+    session = 'acla-' + identity
+    command = [sys.executable, str(ROOT / 'acla_cli.py'), '--state', str(store.path.resolve()), 'watch']
+    store.db.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    store.db.execute("INSERT INTO settings VALUES ('interval', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(interval),))
+    store.db.commit()
+    created = launch(session, str(store.path.parent.resolve()), command,
+                     agent_id=identity, run_id=identity, role='watcher', socket=DEFAULT_SOCKET)
+    return {'session': session, 'socket': DEFAULT_SOCKET, 'created': created, 'interval': interval}
+
+
+def cmd_run_start(args):
+    astra_thread = native_thread(args.astra_thread)
+    home = codex_home()
+    workspace = str(Path(args.workspace).expanduser().resolve())
+    if not Path(workspace).is_dir():
+        raise ValueError('Luna workspace must already exist')
+    if not shutil.which('codex'):
+        raise ValueError('Install a Codex CLI with `codex queue` support first')
+    handoff = Path(args.handoff_file).expanduser().read_text()
+    if not handoff.strip():
+        raise ValueError('Handoff file must not be empty')
+    run_id = str(uuid.UUID(args.run_id))
     store = Store(args.state)
     try:
-        worker = args.worker_id or new_id()
-        delivered = []
-        rows = store.claim_pending(worker, args.limit, stale_after=max(30, args.interval * 3))
-        for row in rows:
-            recipient = store.agent(row["recipient_id"])
-            try:
-                if not recipient["tmux_session"] or not recipient["tmux_socket"]:
-                    raise RuntimeError("recipient has no bound tmux destination")
-                deliver(recipient["tmux_session"], row["body"], agent_id=recipient["id"],
-                        run_id=store.db.execute("SELECT run_id FROM threads WHERE id=?", (row["thread_id"],)).fetchone()["run_id"],
-                        role=recipient["kind"], socket=recipient["tmux_socket"], command=recipient["command"])
-            except (RuntimeError, OSError, ValueError):
-                store.release_claim(row["id"], worker)
-                continue
-            store.mark_delivered(row["id"], worker)
-            delivered.append(row["id"])
-        print(json.dumps({"delivered": delivered, "checked": len(rows)}))
+        with state_lock(store, 'startup'):
+            existing = store.existing_luna(run_id, args.luna_name)
+            luna_id = existing['id'] if existing else new_id()
+            session = existing['tmux_session'] if existing else safe_session(
+                f'{args.luna_name[:60]}-{run_id}-{luna_id}')
+            command = shlex.join(['codex', '--model', args.luna_model])
+            result = store.start_run(goal=args.goal, run_id=run_id, astra_id=None,
+                astra_name='Astra Critic', astra_workspace=str(Path.cwd()), astra_session=None,
+                astra_socket=None, astra_command='codex', astra_thread_id=astra_thread, codex_home=home,
+                luna_name=args.luna_name, luna_id=luna_id, luna_workspace=workspace,
+                luna_session=session, luna_socket=DEFAULT_SOCKET, luna_command=command,
+                luna_model=args.luna_model, handoff=handoff)
+            luna = store.agent(result['luna_id'])
+            if store.status(run_id)['run']['state'] == 'approved':
+                output({**result, 'state': 'approved', 'launched': False})
+                return
+            argv = ['codex']
+            if luna['codex_thread_id']:
+                argv += ['resume', luna['codex_thread_id']]
+            argv += ['--model', luna['model'], '--cd', workspace,
+                     '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request',
+                     '--add-dir', str(store.path.parent.resolve())]
+            # Initial input is supplied to the CLI, never pasted into an unknown terminal prompt.
+            if not luna['codex_thread_id']:
+                argv.append(bootstrap_message(result, store))
+            created = launch(session, workspace, argv, agent_id=luna['id'], run_id=run_id,
+                role='luna', socket=luna['tmux_socket'], env={'CODEX_HOME': home,
+                'ACLA_STATE': str(store.path.resolve()), 'ACLA_LUNA_ID': luna['id']})
+            watcher = start_watcher(store, args.interval)
+            output({**result, 'tmux_session': session, 'tmux_socket': luna['tmux_socket'],
+                    'luna_model': luna['model'], 'launched': created,
+                    'state': 'ready' if luna['codex_thread_id'] else 'awaiting_actor_binding', 'watcher': watcher})
     finally:
         store.close()
 
 
-def cmd_watch(args) -> None:
-    lock_path = Path(args.state or os.environ.get("ACLA_STATE", str(Path.home() / ".astra-critic-luna-actor" / "state.sqlite3"))).expanduser()
-    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with lock_path.with_name(lock_path.name + ".watch.lock").open("w") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RuntimeError("another ACLA watcher already owns this state store") from exc
-        while True:
-            try:
-                cmd_poll(argparse.Namespace(state=args.state, limit=args.limit, interval=args.interval,
-                                            worker_id=args.worker_id))
-            except (OSError, RuntimeError, sqlite3.Error) as exc:
-                print(json.dumps({"watcher_error": str(exc)}), flush=True)
-            if args.once:
-                return
-            time.sleep(max(1, args.interval))
-
-
-def cmd_status(args) -> None:
+def cmd_bind(args):
     store = Store(args.state)
-    print(json.dumps(store.status(args.run_id), indent=2))
-    store.close()
+    try:
+        store.bind_codex_thread(args.luna_id, native_thread(), codex_home())
+        output({'luna_id': args.luna_id, 'codex_thread_id': native_thread(), 'state': 'ready'})
+    finally:
+        store.close()
 
 
-def cmd_messages(args) -> None:
+def require_astra(store, thread_id):
+    thread = store.db.execute('SELECT * FROM threads WHERE id=?', (thread_id,)).fetchone()
+    if not thread:
+        raise ValueError('Unknown review thread')
+    astra = store.agent(thread['astra_id'])
+    if astra['codex_thread_id'] != native_thread() or astra['codex_home'] != codex_home():
+        raise ValueError('This Codex task is not the Astra bound to this review thread')
+    return thread
+
+
+def cmd_send(args):
     store = Store(args.state)
-    print(json.dumps(store.messages(args.thread_id), indent=2))
-    store.close()
+    try:
+        thread = require_astra(store, args.thread_id)
+        if args.sender_id and args.sender_id != thread['astra_id']:
+            raise ValueError('Sender does not match this Astra')
+        output(store.send(args.thread_id, thread['astra_id'], read_body(args), args.idempotency_key))
+    finally:
+        store.close()
 
 
-def add_state(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--state", default=argparse.SUPPRESS)
+def cmd_luna_message(args):
+    store = Store(args.state)
+    try:
+        luna = store.agent(args.luna_id)
+        if luna['codex_thread_id'] != native_thread() or luna['codex_home'] != codex_home():
+            raise ValueError('This Codex task is not the bound Luna')
+        thread = store.thread_for_luna(args.luna_id)
+        body = read_body(args)
+        if args.command == 'ask-question':
+            body = 'LUNA_QUESTION\n' + body
+        output(store.send(thread['id'], args.luna_id, body, args.idempotency_key))
+    finally:
+        store.close()
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="acla", description="Astra Critic Luna Actor local coordinator")
-    p.add_argument("--state", help="SQLite state path; defaults to ~/.astra-critic-luna-actor/state.sqlite3")
-    sub = p.add_subparsers(dest="command", required=True)
-    init = sub.add_parser("init", help="initialize the local inbox store"); add_state(init); init.set_defaults(func=cmd_init)
-    start = sub.add_parser("run-start", help="create or reuse a run, pair, thread, Luna, and watcher"); add_state(start)
-    start.add_argument("--goal", required=True); start.add_argument("--workspace", required=True)
-    start.add_argument("--astra-name", default="Astra Critic"); start.add_argument("--astra-id")
-    start.add_argument("--astra-session"); start.add_argument("--astra-socket"); start.add_argument("--astra-workspace")
-    start.add_argument("--astra-command", default="codex")
-    start.add_argument("--luna-name", required=True); start.add_argument("--luna-session"); start.add_argument("--luna-id")
-    start.add_argument("--luna-model", default=os.environ.get("ACLA_LUNA_MODEL", "gpt-5.6-sol"))
-    start.add_argument("--command"); start.add_argument("--run-id"); start.add_argument("--interval", type=int, default=300)
-    start.set_defaults(func=cmd_run_start)
-    send = sub.add_parser("send", help="send a full message on a thread"); add_state(send)
-    send.add_argument("--thread-id", required=True); send.add_argument("--sender-id", required=True)
-    send.add_argument("--body"); send.add_argument("--body-file"); send.add_argument("--idempotency-key")
-    send.set_defaults(func=cmd_send)
-    for name, marker, help_text in (("send-reply", "", "Luna reply bound to its one Astra"), ("ask-question", "LUNA_QUESTION", "Luna question bound to its one Astra")):
-        command = sub.add_parser(name, help=help_text); add_state(command)
-        command.add_argument("--luna-id", required=True); command.add_argument("--thread-id")
-        command.add_argument("--body"); command.add_argument("--body-file"); command.add_argument("--idempotency-key")
-        command.set_defaults(func=lambda a, m=marker: cmd_luna_message(a, m))
-    poll = sub.add_parser("poll", help="deliver pending full messages once"); add_state(poll)
-    poll.add_argument("--limit", type=int, default=100); poll.add_argument("--interval", type=int, default=300); poll.add_argument("--worker-id")
-    poll.set_defaults(func=cmd_poll)
-    watch = sub.add_parser("watch", help="poll and deliver messages repeatedly"); add_state(watch)
-    watch.add_argument("--interval", type=int, default=300); watch.add_argument("--limit", type=int, default=100)
-    watch.add_argument("--worker-id"); watch.add_argument("--once", action="store_true"); watch.set_defaults(func=cmd_watch)
-    status = sub.add_parser("status", help="show a run and its Luna mapping"); add_state(status)
-    status.add_argument("--run-id", required=True); status.set_defaults(func=cmd_status)
-    messages = sub.add_parser("messages", help="read complete messages on a thread"); add_state(messages)
-    messages.add_argument("--thread-id", required=True); messages.set_defaults(func=cmd_messages)
+def envelope(store, row):
+    thread = store.db.execute('SELECT * FROM threads WHERE id=?', (row['thread_id'],)).fetchone()
+    sender = store.agent(row['sender_id'])
+    recipient = store.agent(row['recipient_id'])
+    label = 'From the user (via the review workflow):' if recipient['kind'] == 'luna' else f"From Luna {sender['name']}:"
+    reply = (f"{helper(store)} send --thread-id {row['thread_id']} --body-file - --idempotency-key <stable-key>"
+             if recipient['kind'] == 'astra' else
+             f"{helper(store)} send-reply --luna-id {recipient['id']} --body-file - --idempotency-key <stable-key>")
+    return (f"[ACLA message {row['id']}; run {thread['run_id']}; thread {row['thread_id']}; sender {sender['id']}]\n"
+            f"Reply command (body on stdin): {reply}\n"
+            'Handle this message ID once. Continue the bound review workflow.\n\n'
+            f"{label}\n{row['body']}")
+
+
+def cmd_poll(args, *, quiet=False):
+    store = Store(args.state)
+    worker = new_id()
+    delivered, errors = [], []
+    try:
+        # One transport worker across poll and watch; no batches waiting for expiring leases.
+        with state_lock(store, 'delivery', blocking=False):
+            rows = store.claim_pending(worker, args.limit)
+            for row in rows:
+                recipient = store.agent(row['recipient_id'])
+                if not recipient['codex_thread_id']:
+                    store.release_claim(row['id'], worker, 'Recipient has not bound its Codex task yet')
+                    continue
+                try:
+                    if recipient['kind'] == 'luna':
+                        thread = store.db.execute('SELECT run_id FROM threads WHERE id=?', (row['thread_id'],)).fetchone()
+                        verify_destination(recipient['tmux_session'], recipient['id'], thread['run_id'],
+                            'luna', recipient['tmux_socket'], require_existing=True)
+                except (RuntimeError, OSError) as exc:
+                    store.release_claim(row['id'], worker, str(exc))
+                    errors.append({'message_id': row['id'], 'state': 'pending', 'error': str(exc)})
+                    continue
+                store.mark_dispatching(row['id'], worker)
+                try:
+                    queue_message(recipient['codex_thread_id'], envelope(store, row),
+                                  codex_home=recipient['codex_home'], workspace=recipient['workspace'])
+                except DeliveryUnavailable as exc:
+                    store.reset_undispatched(row['id'], worker, str(exc))
+                    errors.append({'message_id': row['id'], 'state': 'pending', 'error': str(exc)})
+                except (DeliveryUncertain, OSError, RuntimeError) as exc:
+                    store.mark_uncertain(row['id'], worker, str(exc))
+                    errors.append({'message_id': row['id'], 'state': 'uncertain', 'error': str(exc)})
+                else:
+                    store.mark_delivered(row['id'], worker)
+                    delivered.append(row['id'])
+        if not quiet or delivered or errors:
+            output({'delivered': delivered, 'errors': errors})
+    finally:
+        store.close()
+
+
+def cmd_watch(args):
+    store = Store(args.state)
+    try:
+        with state_lock(store, 'watch', blocking=False):
+            while True:
+                try:
+                    cmd_poll(argparse.Namespace(state=str(store.path), limit=100), quiet=True)
+                except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                    output({'watcher_error': str(exc)})
+                if args.once:
+                    break
+                interval = args.interval or 300
+                if not args.interval:
+                    try:
+                        value = store.db.execute("SELECT value FROM settings WHERE key='interval'").fetchone()
+                        if value:
+                            interval = int(value['value'])
+                    except sqlite3.OperationalError:
+                        pass
+                time.sleep(max(1, interval))
+    finally:
+        store.close()
+
+
+def cmd_approve(args):
+    store = Store(args.state)
+    try:
+        thread = require_astra(store, args.thread_id)
+        output(store.approve(args.thread_id, thread['astra_id'], read_body(args), args.idempotency_key))
+    finally:
+        store.close()
+
+
+def cmd_status(args):
+    store = Store(args.state)
+    try:
+        output(store.status(args.run_id))
+    finally:
+        store.close()
+
+
+def cmd_messages(args):
+    store = Store(args.state)
+    try:
+        output(store.messages(args.thread_id))
+    finally:
+        store.close()
+
+
+def cmd_resolve(args):
+    store = Store(args.state)
+    try:
+        message = store.db.execute('SELECT * FROM messages WHERE id=?', (args.message_id,)).fetchone()
+        if not message:
+            raise ValueError('Unknown message')
+        require_astra(store, message['thread_id'])
+        store.resolve_delivery(args.message_id, retry=args.retry)
+        output({'message_id': args.message_id, 'state': 'pending' if args.retry else 'delivered'})
+    finally:
+        store.close()
+
+
+def cmd_stop_actor(args):
+    store = Store(args.state)
+    try:
+        thread = store.thread_for_luna(args.luna_id)
+        require_astra(store, thread['id'])
+        luna = store.agent(args.luna_id)
+        stop_owned(luna['tmux_session'], agent_id=luna['id'], run_id=thread['run_id'],
+                   role='luna', socket=luna['tmux_socket'])
+        output({'luna_id': luna['id'], 'state': 'stopped', 'conversation_retained': True})
+    finally:
+        store.close()
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog='acla', description='Standalone Astra critic / GPT-6 Luna actor workflow')
+    p.add_argument('--state', help='Private SQLite path')
+    sub = p.add_subparsers(dest='command', required=True)
+    def command(name, handler):
+        c = sub.add_parser(name)
+        c.add_argument('--state', default=argparse.SUPPRESS)
+        c.set_defaults(func=handler)
+        return c
+    start = command('run-start', cmd_run_start)
+    for name in ('run-id', 'goal', 'workspace', 'luna-name', 'handoff-file'):
+        start.add_argument('--' + name, required=True)
+    start.add_argument('--astra-thread')
+    start.add_argument('--luna-model', default=os.environ.get('ACLA_LUNA_MODEL', DEFAULT_MODEL))
+    start.add_argument('--interval', type=int, default=300)
+    bind = command('bind-session', cmd_bind); bind.add_argument('--luna-id', required=True)
+    for name, handler in [('send', cmd_send), ('send-reply', cmd_luna_message), ('ask-question', cmd_luna_message), ('approve', cmd_approve)]:
+        c = command(name, handler)
+        c.add_argument('--thread-id' if name in ('send', 'approve') else '--luna-id', required=True)
+        c.add_argument('--body'); c.add_argument('--body-file')
+        c.add_argument('--idempotency-key', required=True)
+        if name == 'send':
+            c.add_argument('--sender-id')
+    c = command('poll', cmd_poll); c.add_argument('--limit', type=int, default=100)
+    c = command('watch', cmd_watch); c.add_argument('--interval', type=int); c.add_argument('--once', action='store_true')
+    c = command('status', cmd_status); c.add_argument('--run-id', required=True)
+    c = command('messages', cmd_messages); c.add_argument('--thread-id', required=True)
+    c = command('resolve-delivery', cmd_resolve); c.add_argument('--message-id', type=int, required=True)
+    choice = c.add_mutually_exclusive_group(required=True)
+    choice.add_argument('--retry', action='store_true'); choice.add_argument('--delivered', action='store_true')
+    c = command('stop-actor', cmd_stop_actor); c.add_argument('--luna-id', required=True)
     return p
 
 
-def main(argv=None) -> int:
+def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         args.func(args)
         return 0
-    except (ValueError, RuntimeError, OSError) as exc:
+    except (ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
         parser.error(str(exc))
         return 2
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())
