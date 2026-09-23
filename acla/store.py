@@ -106,6 +106,10 @@ class Store:
                         (luna_id, astra_id, run_id))
         self.db.commit()
 
+    def existing_luna(self, run_id: str, name: str) -> sqlite3.Row | None:
+        return self.db.execute("""SELECT l.* FROM pairs p JOIN agents l ON l.id=p.luna_id
+            WHERE p.run_id=? AND l.name=?""", (run_id, name)).fetchone()
+
     def thread(self, run_id: str, astra_id: str, luna_id: str, thread_id: str | None = None) -> str:
         self.pair(run_id, astra_id, luna_id)
         existing = self.db.execute("SELECT id FROM threads WHERE run_id=? AND luna_id=?", (run_id, luna_id)).fetchone()

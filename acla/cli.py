@@ -24,9 +24,14 @@ def cmd_run_start(args) -> None:
     store = Store(args.state)
     run_id = store.create_run(args.goal, args.run_id)
     astra_id = store.ensure_agent(args.astra_id, "astra", args.astra_name)
-    session = safe_session(args.luna_session or args.luna_name)
-    luna_id = store.register_agent("luna", args.luna_name, workspace=str(Path(args.workspace).expanduser()),
-                                   tmux_session=session, command=args.command)
+    existing = store.agent(args.luna_id) if args.luna_id else store.existing_luna(run_id, args.luna_name)
+    if existing:
+        luna_id = existing["id"]
+        session = existing["tmux_session"]
+    else:
+        session = safe_session(args.luna_session or args.luna_name)
+        luna_id = store.register_agent("luna", args.luna_name, workspace=str(Path(args.workspace).expanduser()),
+                                       tmux_session=session, command=args.command)
     store.pair(run_id, astra_id, luna_id)
     thread_id = store.thread(run_id, astra_id, luna_id)
     created = launch(session, str(Path(args.workspace).expanduser()), args.command)
@@ -91,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     start = sub.add_parser("run-start", help="create a run, pair, thread, and Luna tmux session")
     start.add_argument("--goal", required=True); start.add_argument("--workspace", required=True)
     start.add_argument("--astra-name", default="Astra Critic"); start.add_argument("--astra-id")
-    start.add_argument("--luna-name", required=True); start.add_argument("--luna-session")
+    start.add_argument("--luna-name", required=True); start.add_argument("--luna-session"); start.add_argument("--luna-id")
     start.add_argument("--command"); start.add_argument("--run-id"); start.set_defaults(func=cmd_run_start)
     send = sub.add_parser("send", help="send a full message on a thread")
     send.add_argument("--thread-id", required=True); send.add_argument("--sender-id", required=True)
