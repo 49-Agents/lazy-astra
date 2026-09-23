@@ -20,9 +20,10 @@ class Store:
 
     def __init__(self, path: str | Path | None = None):
         default = os.environ.get("ACLA_STATE", str(Path.home() / ".astra-critic-luna-actor" / "state.sqlite3"))
-        self.path = Path(path or default).expanduser()
+        self.path = Path(path or default).expanduser().resolve()
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=30)
+        os.chmod(self.path, 0o600)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.execute("PRAGMA journal_mode = WAL")
@@ -38,12 +39,14 @@ class Store:
             id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('astra','luna')),
             name TEXT NOT NULL, workspace TEXT, tmux_session TEXT, tmux_socket TEXT,
             command TEXT, bootstrap_sent INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1
+            created_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+            codex_thread_id TEXT, codex_home TEXT, model TEXT
         );
         CREATE TABLE IF NOT EXISTS pairs (
             luna_id TEXT PRIMARY KEY REFERENCES agents(id),
             astra_id TEXT NOT NULL REFERENCES agents(id),
             run_id TEXT NOT NULL REFERENCES runs(id),
+            handoff TEXT, approved INTEGER NOT NULL DEFAULT 0,
             UNIQUE(run_id, astra_id, luna_id)
         );
         CREATE TABLE IF NOT EXISTS threads (
@@ -55,7 +58,9 @@ class Store:
             id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL REFERENCES threads(id),
             sender_id TEXT NOT NULL REFERENCES agents(id), recipient_id TEXT NOT NULL REFERENCES agents(id),
             body TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT, read_at TEXT,
-            delivery_claim TEXT, delivery_claimed_at TEXT
+            delivery_claim TEXT, delivery_claimed_at TEXT,
+            delivery_state TEXT NOT NULL DEFAULT 'pending', delivery_worker TEXT,
+            delivery_error TEXT
         );
         CREATE TABLE IF NOT EXISTS idempotency (
             sender_id TEXT NOT NULL, key TEXT NOT NULL, message_id INTEGER NOT NULL REFERENCES messages(id),
@@ -66,8 +71,17 @@ class Store:
         self._ensure_column("runs", "astra_id", "TEXT")
         self._ensure_column("agents", "tmux_socket", "TEXT")
         self._ensure_column("agents", "bootstrap_sent", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("agents", "codex_thread_id", "TEXT")
+        self._ensure_column("agents", "codex_home", "TEXT")
+        self._ensure_column("agents", "model", "TEXT")
+        self._ensure_column("pairs", "handoff", "TEXT")
+        self._ensure_column("pairs", "approved", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("messages", "delivery_claim", "TEXT")
         self._ensure_column("messages", "delivery_claimed_at", "TEXT")
+        self._ensure_column("messages", "delivery_state", "TEXT NOT NULL DEFAULT 'pending'")
+        self._ensure_column("messages", "delivery_worker", "TEXT")
+        self._ensure_column("messages", "delivery_error", "TEXT")
+        self.db.execute("UPDATE messages SET delivery_state='delivered' WHERE delivered_at IS NOT NULL AND delivery_state='pending'")
         self.db.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -91,14 +105,20 @@ class Store:
             AND COALESCE(tmux_socket, '')=COALESCE(?, '') ORDER BY created_at LIMIT 1""",
                               (kind, tmux_session, tmux_socket)).fetchone()
 
+    def find_codex_agent(self, kind: str, thread_id: str, codex_home: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM agents WHERE kind=? AND codex_thread_id=? AND codex_home=? ORDER BY created_at LIMIT 1",
+                               (kind, thread_id, codex_home)).fetchone()
+
     def _insert_agent(self, kind: str, name: str, *, workspace: str | None,
                       tmux_session: str | None, tmux_socket: str | None,
-                      command: str | None, agent_id: str | None = None) -> str:
+                      command: str | None, agent_id: str | None = None,
+                      codex_thread_id: str | None = None, codex_home: str | None = None,
+                      model: str | None = None) -> str:
         agent_id = agent_id or new_id()
         self.db.execute("""INSERT INTO agents
-            (id,kind,name,workspace,tmux_session,tmux_socket,command,bootstrap_sent,created_at,active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 1)""",
-                        (agent_id, kind, name, workspace, tmux_session, tmux_socket, command, now()))
+            (id,kind,name,workspace,tmux_session,tmux_socket,command,bootstrap_sent,created_at,active,codex_thread_id,codex_home,model)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?)""",
+                        (agent_id, kind, name, workspace, tmux_session, tmux_socket, command, now(), codex_thread_id, codex_home, model))
         return agent_id
 
     def register_agent(self, kind: str, name: str, *, workspace: str | None = None,
@@ -149,8 +169,15 @@ class Store:
                   astra_name: str, astra_workspace: str | None, astra_session: str | None,
                   astra_socket: str | None, astra_command: str | None,
                   luna_name: str, luna_id: str | None, luna_workspace: str,
-                  luna_session: str, luna_socket: str, luna_command: str | None) -> dict:
+                  luna_session: str, luna_socket: str, luna_command: str | None,
+                  astra_thread_id: str | None = None, codex_home: str | None = None,
+                  luna_model: str | None = None, handoff: str | None = None) -> dict:
         """Atomically create or reuse the complete run identity."""
+        if astra_thread_id:
+            try:
+                astra_thread_id = str(uuid.UUID(astra_thread_id))
+            except (ValueError, AttributeError):
+                raise ValueError("Astra Codex thread ID must be a UUID")
         run_id = run_id or new_id()
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -169,25 +196,35 @@ class Store:
                     raise ValueError("run ID is already bound to a different Astra")
                 actual_astra = persisted_astra
             else:
-                existing_destination = self.find_agent_destination("astra", astra_session, astra_socket)
+                existing_destination = (self.find_codex_agent("astra", astra_thread_id, codex_home)
+                                         if astra_thread_id and codex_home else
+                                         self.find_agent_destination("astra", astra_session, astra_socket))
                 actual_astra = astra_id or (existing_destination["id"] if existing_destination else None)
                 if not actual_astra:
                     actual_astra = self._insert_agent("astra", astra_name,
                         workspace=astra_workspace, tmux_session=astra_session,
-                        tmux_socket=astra_socket, command=astra_command)
+                        tmux_socket=astra_socket, command=astra_command,
+                        codex_thread_id=astra_thread_id, codex_home=codex_home)
                 self.db.execute("UPDATE runs SET astra_id=?, updated_at=? WHERE id=?", (actual_astra, now(), run_id))
             self.agent(actual_astra)
             self._destination(actual_astra, workspace=astra_workspace, tmux_session=astra_session,
                               tmux_socket=astra_socket, command=astra_command)
+            self._codex_identity(actual_astra, astra_thread_id, codex_home, None)
 
             existing = self.db.execute("""SELECT l.* FROM pairs p JOIN agents l ON l.id=p.luna_id
                 WHERE p.run_id=? AND (l.name=? OR l.id=?)""", (run_id, luna_name, luna_id or "")).fetchone()
+            if run["state"] == "approved" and not existing:
+                raise ValueError("approved run cannot accept additional actors")
             if existing:
                 actual_luna = existing["id"]
                 if luna_id and luna_id != actual_luna:
                     raise ValueError("run stream name and Luna ID refer to different actors")
                 self._destination(actual_luna, workspace=luna_workspace, tmux_session=luna_session,
                                   tmux_socket=luna_socket, command=luna_command)
+                self._codex_identity(actual_luna, None, codex_home, luna_model)
+                old_handoff = self.db.execute("SELECT handoff FROM pairs WHERE luna_id=?", (actual_luna,)).fetchone()
+                if old_handoff and handoff is not None and old_handoff["handoff"] not in (None, handoff):
+                    raise ValueError("run stream already has a different handoff")
             else:
                 actual_luna = luna_id or new_id()
                 if luna_id:
@@ -195,18 +232,52 @@ class Store:
                     if existing_agent:
                         raise ValueError("Luna ID exists but is not part of this run")
                 self._insert_agent("luna", luna_name, workspace=luna_workspace, tmux_session=luna_session,
-                                   tmux_socket=luna_socket, command=luna_command, agent_id=actual_luna)
+                                   tmux_socket=luna_socket, command=luna_command, agent_id=actual_luna,
+                                   codex_home=codex_home, model=luna_model)
             pair = self.db.execute("SELECT * FROM pairs WHERE luna_id=?", (actual_luna,)).fetchone()
             if pair and (pair["run_id"] != run_id or pair["astra_id"] != actual_astra):
                 raise ValueError("Luna is already bound to another Astra/run")
             self.db.execute("INSERT OR IGNORE INTO pairs(luna_id,astra_id,run_id) VALUES(?,?,?)",
                             (actual_luna, actual_astra, run_id))
+            self.db.execute("UPDATE pairs SET handoff=COALESCE(handoff, ?) WHERE luna_id=?", (handoff, actual_luna))
             thread_id = self._thread(run_id, actual_astra, actual_luna)
             self.db.commit()
         except Exception:
             self.db.rollback()
             raise
         return {"run_id": run_id, "astra_id": actual_astra, "luna_id": actual_luna, "thread_id": thread_id}
+
+    def _codex_identity(self, agent_id: str, thread_id: str | None, codex_home: str | None, model: str | None) -> None:
+        row = self.agent(agent_id)
+        for field, value in (("codex_thread_id", thread_id), ("codex_home", codex_home), ("model", model)):
+            if value is not None and row[field] not in (None, value):
+                raise ValueError(f"run identity already has a different {field}")
+            if value is not None and row[field] is None:
+                self.db.execute(f"UPDATE agents SET {field}=? WHERE id=?", (value, agent_id))
+
+    def bind_codex_thread(self, luna_id: str, thread_id: str, codex_home: str) -> None:
+        try:
+            canonical = str(uuid.UUID(thread_id))
+        except (ValueError, AttributeError):
+            raise ValueError("Codex thread ID must be a UUID")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            agent = self.agent(luna_id)
+            if agent["kind"] != "luna":
+                raise ValueError("only Luna agents can bind a Codex thread")
+            if agent["codex_home"] not in (None, codex_home):
+                raise ValueError("Codex home does not match Luna identity")
+            if agent["codex_thread_id"] not in (None, canonical):
+                raise ValueError("Luna is already bound to a different Codex thread")
+            other = self.db.execute("SELECT id FROM agents WHERE kind='luna' AND codex_thread_id=? AND codex_home=? AND id<>?",
+                                    (canonical, codex_home, luna_id)).fetchone()
+            if other:
+                raise ValueError("Codex thread is already bound to another Luna")
+            self.db.execute("UPDATE agents SET codex_thread_id=?,codex_home=? WHERE id=?", (canonical, codex_home, luna_id))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
     def thread_for_luna(self, luna_id: str, thread_id: str | None = None) -> sqlite3.Row:
         if thread_id:
@@ -220,10 +291,13 @@ class Store:
     def send(self, thread_id: str, sender_id: str, body: str, key: str | None = None) -> dict:
         if not body.strip():
             raise ValueError("message body cannot be empty")
+        self.db.execute("BEGIN IMMEDIATE")
         thread = self.db.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
         if not thread:
+            self.db.rollback()
             raise ValueError(f"unknown thread: {thread_id}")
         if sender_id not in {thread["astra_id"], thread["luna_id"]}:
+            self.db.rollback()
             raise ValueError("sender is not a participant in this thread")
         recipient = thread["luna_id"] if sender_id == thread["astra_id"] else thread["astra_id"]
         if key:
@@ -231,8 +305,14 @@ class Store:
                 WHERE i.sender_id=? AND i.key=?""", (sender_id, key)).fetchone()
             if old:
                 if old["thread_id"] != thread_id or old["body"] != body:
+                    self.db.rollback()
                     raise ValueError("idempotency conflict: key already names different message text or thread")
+                self.db.commit()
                 return dict(old)
+        pair = self.db.execute("SELECT approved FROM pairs WHERE luna_id=?", (thread["luna_id"],)).fetchone()
+        if pair and pair["approved"]:
+            self.db.rollback()
+            raise ValueError("run stream is approved; ordinary messages are closed")
         cur = self.db.execute("""INSERT INTO messages
             (thread_id,sender_id,recipient_id,body,created_at) VALUES(?,?,?,?,?)""",
                               (thread_id, sender_id, recipient, body, now()))
@@ -242,30 +322,112 @@ class Store:
         self.db.commit()
         return dict(self.db.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone())
 
+    def approve(self, thread_id: str, astra_id: str, body: str, key: str) -> dict:
+        if not body.strip():
+            raise ValueError("message body cannot be empty")
+        body = "ASTRA_APPROVED\n" + body
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            thread = self.db.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
+            if not thread:
+                raise ValueError(f"unknown thread: {thread_id}")
+            if astra_id != thread["astra_id"]:
+                raise ValueError("only the thread's Astra can approve")
+            old = self.db.execute("SELECT m.* FROM idempotency i JOIN messages m ON m.id=i.message_id WHERE i.sender_id=? AND i.key=?",
+                                  (astra_id, key)).fetchone()
+            if old:
+                if old["thread_id"] != thread_id or old["body"] != body:
+                    raise ValueError("idempotency conflict: key already names different message text or thread")
+                self.db.commit()
+                return dict(old)
+            pair = self.db.execute("SELECT approved FROM pairs WHERE luna_id=?", (thread["luna_id"],)).fetchone()
+            if pair and pair["approved"]:
+                raise ValueError("stream is already approved; approval retry must use its original idempotency key")
+            cur = self.db.execute("INSERT INTO messages(thread_id,sender_id,recipient_id,body,created_at) VALUES(?,?,?,?,?)",
+                                  (thread_id, astra_id, thread["luna_id"], body, now()))
+            message_id = cur.lastrowid
+            self.db.execute("INSERT INTO idempotency VALUES(?,?,?)", (astra_id, key, message_id))
+            self.db.execute("UPDATE pairs SET approved=1 WHERE luna_id=?", (thread["luna_id"],))
+            remaining = self.db.execute("SELECT COUNT(*) FROM pairs WHERE run_id=? AND approved=0", (thread["run_id"],)).fetchone()[0]
+            if not remaining:
+                self.db.execute("UPDATE runs SET state='approved',updated_at=? WHERE id=?", (now(), thread["run_id"]))
+            result = dict(self.db.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone())
+            self.db.commit()
+            return result
+        except Exception:
+            self.db.rollback()
+            raise
+
     def claim_pending(self, worker: str, limit: int = 100, stale_after: int = 900) -> list[sqlite3.Row]:
         cutoff = datetime.fromtimestamp(datetime.now().timestamp() - stale_after, timezone.utc).isoformat()
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            rows = self.db.execute("""SELECT * FROM messages WHERE delivered_at IS NULL
-                AND (delivery_claim IS NULL OR delivery_claimed_at<?) ORDER BY id LIMIT ?""", (cutoff, limit)).fetchall()
+            # A timed out dispatch is ambiguous: quarantine it for reconciliation. Only
+            # a claim that never entered dispatch can safely return to the queue.
+            self.db.execute("""UPDATE messages SET delivery_state='uncertain',delivery_error=COALESCE(delivery_error,'dispatch lease expired')
+                WHERE delivery_state='dispatching' AND delivery_claimed_at<? AND delivered_at IS NULL""", (cutoff,))
+            self.db.execute("""UPDATE messages SET delivery_state='pending',delivery_claim=NULL,delivery_claimed_at=NULL,delivery_worker=NULL
+                WHERE delivery_state='claimed' AND delivery_claimed_at<? AND delivered_at IS NULL""", (cutoff,))
+            rows = self.db.execute("""SELECT * FROM messages WHERE delivered_at IS NULL AND delivery_state='pending'
+                ORDER BY id LIMIT ?""", (limit,)).fetchall()
             stamp = now()
             for row in rows:
-                self.db.execute("UPDATE messages SET delivery_claim=?, delivery_claimed_at=? WHERE id=?",
-                                (worker, stamp, row["id"]))
+                self.db.execute("UPDATE messages SET delivery_claim=?, delivery_claimed_at=?,delivery_worker=?,delivery_state='claimed' WHERE id=?",
+                                (worker, stamp, worker, row["id"]))
             self.db.commit()
         except Exception:
             self.db.rollback()
             raise
         return rows
 
-    def release_claim(self, message_id: int, worker: str) -> None:
-        self.db.execute("UPDATE messages SET delivery_claim=NULL, delivery_claimed_at=NULL WHERE id=? AND delivery_claim=?",
-                        (message_id, worker))
+    def mark_dispatching(self, message_id: int, worker: str) -> None:
+        cur = self.db.execute("UPDATE messages SET delivery_state='dispatching',delivery_worker=? WHERE id=? AND delivery_claim=? AND delivery_state='claimed' AND delivered_at IS NULL",
+                              (worker, message_id, worker))
+        if cur.rowcount != 1:
+            raise ValueError("message is not claimed by this worker")
+        self.db.commit()
+
+    def mark_uncertain(self, message_id: int, worker: str, error: str | None = None) -> None:
+        cur = self.db.execute("UPDATE messages SET delivery_state='uncertain',delivery_error=?,delivery_worker=? WHERE id=? AND delivery_claim=? AND delivered_at IS NULL",
+                              (error, worker, message_id, worker))
+        if cur.rowcount != 1:
+            raise ValueError("message is not claimed by this worker")
+        self.db.commit()
+
+    def release_claim(self, message_id: int, worker: str, error: str | None = None) -> None:
+        cur = self.db.execute("UPDATE messages SET delivery_claim=NULL,delivery_claimed_at=NULL,delivery_worker=NULL,delivery_state='pending',delivery_error=? WHERE id=? AND delivery_claim=? AND delivery_state='claimed'",
+                              (error, message_id, worker))
+        if cur.rowcount != 1:
+            raise ValueError("only a pre-dispatch claim can be released")
+        self.db.commit()
+
+    def reset_undispatched(self, message_id: int, worker: str, error: str | None = None) -> None:
+        """Release a dispatching claim only when the transport guarantees no child started.
+
+        Call only for a preflight/exec-start failure (for example DeliveryUnavailable).
+        Once the queue child starts, use mark_uncertain when delivery cannot be confirmed.
+        """
+        cur = self.db.execute("""UPDATE messages SET delivery_claim=NULL,delivery_claimed_at=NULL,
+            delivery_worker=NULL,delivery_state='pending',delivery_error=?
+            WHERE id=? AND delivery_claim=? AND delivery_state='dispatching' AND delivered_at IS NULL""",
+                              (error, message_id, worker))
+        if cur.rowcount != 1:
+            raise ValueError("message is not dispatching for this worker")
         self.db.commit()
 
     def mark_delivered(self, message_id: int, worker: str) -> None:
-        self.db.execute("""UPDATE messages SET delivered_at=?, delivery_claim=NULL, delivery_claimed_at=NULL
+        self.db.execute("""UPDATE messages SET delivered_at=?, delivery_claim=NULL, delivery_claimed_at=NULL,
+            delivery_worker=NULL,delivery_state='delivered',delivery_error=NULL
             WHERE id=? AND delivered_at IS NULL AND delivery_claim=?""", (now(), message_id, worker))
+        self.db.commit()
+
+    def resolve_delivery(self, message_id: int, retry: bool) -> None:
+        state = 'pending' if retry else 'delivered'
+        delivered = None if retry else now()
+        cur = self.db.execute("UPDATE messages SET delivery_state=?,delivery_claim=NULL,delivery_claimed_at=NULL,delivery_worker=NULL,delivery_error=NULL,delivered_at=? WHERE id=? AND delivery_state='uncertain' AND delivered_at IS NULL",
+                              (state, delivered, message_id))
+        if cur.rowcount != 1:
+            raise ValueError("message is not awaiting uncertain-delivery resolution")
         self.db.commit()
 
     def messages(self, thread_id: str) -> list[dict]:
@@ -276,7 +438,11 @@ class Store:
         if not run:
             raise ValueError(f"unknown run: {run_id}")
         streams = self.db.execute("""SELECT p.*, a.name AS astra_name, a.tmux_session AS astra_session,
-            l.name AS luna_name, l.tmux_session AS luna_session, t.id AS thread_id
+            a.codex_thread_id AS astra_codex_thread_id, a.codex_home AS astra_codex_home,
+            l.name AS luna_name, l.tmux_session AS luna_session, l.codex_thread_id AS luna_codex_thread_id,
+            l.codex_home AS luna_codex_home, l.model AS luna_model, t.id AS thread_id,
+            (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.delivered_at IS NULL) AS pending_messages,
+            (SELECT m.delivery_error FROM messages m WHERE m.thread_id=t.id AND m.delivery_error IS NOT NULL ORDER BY m.id DESC LIMIT 1) AS delivery_error
             FROM pairs p JOIN agents a ON a.id=p.astra_id JOIN agents l ON l.id=p.luna_id
             LEFT JOIN threads t ON t.luna_id=p.luna_id WHERE p.run_id=?""", (run_id,)).fetchall()
         return {"run": dict(run), "streams": [dict(row) for row in streams]}
