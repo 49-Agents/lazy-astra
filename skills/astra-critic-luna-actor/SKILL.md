@@ -57,22 +57,28 @@ If that environment variable is absent, use a known exact task UUID through
    alternative. `--interval` changes the shared state store's polling interval;
    the default is five minutes. Empty polls do not invoke a model.
 
-### Workspace trust
+### Permissions and workspace trust
+
+The owner requires full access for every Luna: the launcher always passes
+`--sandbox danger-full-access --ask-for-approval never` on launch and resume.
+Use the launcher rather than constructing a restricted Codex command. These
+permissions do not expand the handoff's merge, deployment, or external-send scope.
 
 The owner authorizes automatic workspace trust for actors launched with this
 workflow. `run-start` defaults to `--workspace-trust trusted` for any selected
 workspace, including new worktrees, on both initial launch and resume. It passes
 an exact-workspace Codex configuration override for that invocation, allowing
 project configuration and instructions to load. Do not request trust confirmation
-again for each ACLA launch. The launcher preserves workspace-write and on-request
-command approvals and does not change the user's global Codex configuration.
+again for each ACLA launch. The launcher applies these settings per invocation
+and does not change the user's global Codex configuration.
 Use `--workspace-trust configured` if the owner requests normal Codex trust
-settings/prompts. Login, hook trust, and command approvals are separate.
+settings/prompts. Login and hook trust are separate.
 
-For an existing actor stalled at a directory-trust prompt from an older launch,
+For an existing actor using old permissions or stalled at a directory-trust prompt,
 use the updated helper's `stop-actor --luna-id '<ID>'`, then repeat its original
 `run-start` with the same state, identities, model, workspace, and handoff. This
-controlled restart applies the trust override and retains any bound conversation.
+controlled restart applies full access and the trust override while retaining
+any bound conversation.
 Do not inject keystrokes into interactive prompts. If a trust prompt persists
 after one restart with the updated launcher, report the exact blocker.
 

@@ -153,7 +153,7 @@ def cmd_run_start(args):
             if luna['codex_thread_id']:
                 argv += ['resume', luna['codex_thread_id']]
             argv += ['--model', luna['model'], '--cd', workspace,
-                     '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request',
+                     '--sandbox', 'danger-full-access', '--ask-for-approval', 'never',
                      '--add-dir', str(store.path.parent.resolve())]
             if args.workspace_trust == 'trusted':
                 # The owner authorizes trust for ACLA workspaces. Scope it to this

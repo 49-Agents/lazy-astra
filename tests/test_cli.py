@@ -78,9 +78,9 @@ class CliWorkflowTests(unittest.TestCase):
         argv = self.mock_launch.call_args.args[2]
         self.assertEqual(argv[:4], ["codex", "--model", "gpt-6-luna", "--cd"])
         self.assertIn("--sandbox", argv)
-        self.assertIn("workspace-write", argv)
+        self.assertIn("danger-full-access", argv)
         self.assertIn("--ask-for-approval", argv)
-        self.assertIn("on-request", argv)
+        self.assertIn("never", argv)
         self.assertIn("--add-dir", argv)
         prompt = argv[-1]
         self.assertIn("bind-session --luna-id " + result["luna_id"], prompt)

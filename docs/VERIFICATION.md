@@ -53,8 +53,9 @@ state was retained for evidence. A watcher source upgrade was also exercised.
 These scratch workspaces initially showed Codex's directory-trust prompt. The
 reviewer accepted it only after checking that each was the newly created empty
 fixture. This evidence predates the automatic workspace trust update: the current
-launcher passes a workspace-specific trust override at startup. Login and other
-approval prompts remain separate. The earlier acceptance run does not validate
+launcher passes a workspace-specific trust override at startup. A subsequent
+owner-requested update makes every launch/resume use danger-full-access with
+approval policy never; login and hook trust remain separate. The earlier acceptance run does not validate
 the new trust override; no new runtime checks were requested for that update.
 
 Queue success proves Codex accepted the message, not that the model completed

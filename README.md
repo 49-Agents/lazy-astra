@@ -18,8 +18,9 @@ credentials are needed. There is no terminal-paste delivery.
 - Astra and actors must be reachable by the same host's Codex queue facility.
   This version is not a cross-machine inbox service.
 
-The actor uses workspace-write with on-request approvals and write access to the
-private inbox directory. ACLA trusts the selected actor workspace for each launch
+Every actor launch and resume uses `danger-full-access` with approval policy
+`never`, as required by the owner. This gives Luna filesystem and network access
+without command approval prompts, including access to shared Git metadata. ACLA trusts the selected actor workspace for each launch
 and resume by default, using a Codex CLI configuration override. This applies to
 ACLA launches in any directory, including newly created worktrees. Trust allows
 Codex to load that workspace's project configuration and instructions.
@@ -27,8 +28,9 @@ Codex to load that workspace's project configuration and instructions.
 The override is scoped to the actor invocation; it does not edit your Codex
 configuration or trust other directories for unrelated Codex sessions. Use
 `--workspace-trust configured` to use your existing Codex trust settings and
-interactive prompts instead. Login, hook trust, and command approvals remain
-separate and can require owner attention.
+interactive prompts instead. Login and hook trust remain separate and can
+require owner attention. Full access does not authorize merges, deployments, or
+other actions outside the assigned task.
 
 ## CLI example
 
@@ -82,10 +84,10 @@ The original unbound actor receives bootstrap again if its process disappeared.
 its conversation. The optional `ACLA_TMUX_SOCKET` selects the isolated tmux server
 (default `acla`).
 
-An actor already waiting at a trust prompt keeps its original launch settings.
+An already running actor keeps its original permissions and trust settings.
 After upgrading, the bound Astra can use `stop-actor --luna-id ID`, then repeat
 the original `run-start` command using the updated helper. The launcher applies
-workspace trust before starting Codex; no terminal keystrokes are needed. Keep
+full access and workspace trust before starting Codex; no terminal keystrokes are needed. Keep
 the same state path, run ID, actor name, workspace, model, and handoff. A bound
 actor resumes its saved conversation; an unbound actor receives bootstrap again.
 
