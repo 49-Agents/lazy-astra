@@ -63,6 +63,22 @@ If that environment variable is absent, use a known exact task UUID through
 
 ### Model speed, permissions, and workspace trust
 
+Luna reasoning effort has a floor of **high**. Astra chooses the effort when
+preparing the handoff: `high` for ordinary bounded implementation, `xhigh` for
+complex multi-step work or long plans, and `max` for the hardest reasoning-heavy
+assignments. Pass `--luna-effort high|xhigh|max` to `run-start`. Never select low
+or medium. Plan length is a signal; consider dependencies and ambiguity too.
+The launcher pins `model_reasoning_effort` on both launch and resume. New actors
+default to high; omitting the flag on resume preserves the last saved launch
+effort, including xhigh/max. Normal service speed remains mandatory at all levels.
+
+An existing terminal does not change configuration when `run-start` reuses it.
+Check `effort_restart_required`: true means a controlled stop/resume is needed.
+Arrange that at a safe boundary with the bound critic, preserving the exact run,
+actor, workspace, handoff and native task. Repeat `run-start` with the chosen
+`--luna-effort` after `stop-actor`. `luna_launch_effort` records the launcher setting,
+not proof of the latest model turn; inspect runtime telemetry to confirm adoption.
+
 Luna must use normal speed, never fast mode. The launcher explicitly sets
 `service_tier="default"` on every launch and resume. Do not enable fast/priority
 mode. Existing sessions need a controlled resume to adopt changed launch settings.

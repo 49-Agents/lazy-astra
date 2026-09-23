@@ -21,6 +21,16 @@ credentials are needed. There is no terminal-paste delivery.
 Every actor launch and resume explicitly uses `service_tier="default"` (normal
 speed, not fast/priority), overriding inherited speed preferences.
 
+Reasoning effort defaults to **high**, pinned with `model_reasoning_effort` on
+launch and resume. Astra may choose `run-start --luna-effort xhigh` for complex
+work/long plans, or `--luna-effort max` for the hardest assignments. Only high,
+xhigh and max are accepted. Omitting the flag preserves an actor's saved effort
+on resume; older actors without a saved effort default to high.
+Already-running terminals require controlled stop/resume to adopt a change:
+`effort_restart_required` reports that need without interrupting their work.
+The returned/status `luna_launch_effort` records the last launch setting, not
+the observed effort of subsequent turns. Confirm actual effort in telemetry.
+
 Every actor launch and resume uses `danger-full-access` with approval policy
 `never`, as required by the owner. This gives Luna filesystem and network access
 without command approval prompts, including access to shared Git metadata.

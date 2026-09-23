@@ -20,7 +20,10 @@ from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL = 'gpt-6-luna'
+LUNA_EFFORTS = ('high', 'xhigh', 'max')
 LUNA_REPORTING_POLICY = '''Luna communication and decision policy:
+Reasoning effort must remain at least high. Astra selects high, xhigh, or max
+for the assignment; do not lower effort or enable fast/priority service.
 Execute the agreed handoff and Astra's explicit review instructions. Do not make
 independent decisions about the plan, scope, requirements, design, tradeoffs, or
 how to resolve ambiguity. When blocked or when any planning input or decision is
@@ -163,6 +166,9 @@ def cmd_run_start(args):
     try:
         with state_lock(store, 'startup'):
             existing = store.existing_luna(run_id, args.luna_name)
+            effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or 'high'
+            if effort not in LUNA_EFFORTS:
+                raise ValueError('Luna reasoning effort must be high, xhigh, or max')
             luna_id = existing['id'] if existing else new_id()
             session = existing['tmux_session'] if existing else safe_session(
                 f'{args.luna_name[:60]}-{run_id}-{luna_id}')
@@ -189,6 +195,7 @@ def cmd_run_start(args):
                      '--sandbox', 'danger-full-access', '--ask-for-approval', 'never',
                      '--config', 'check_for_update_on_startup=false',
                      '--config', 'service_tier="default"',
+                     '--config', f'model_reasoning_effort="{effort}"',
                      '--add-dir', str(store.path.parent.resolve())]
             if args.workspace_trust == 'trusted':
                 # The owner authorizes trust for ACLA workspaces. Scope it to this
@@ -204,9 +211,15 @@ def cmd_run_start(args):
             created = launch(session, workspace, argv, agent_id=luna['id'], run_id=run_id,
                 role='luna', socket=luna['tmux_socket'], env={'CODEX_HOME': home,
                 'ACLA_STATE': str(store.path.resolve()), 'ACLA_LUNA_ID': luna['id']})
+            if created:
+                store.db.execute('UPDATE agents SET reasoning_effort=? WHERE id=?', (effort, luna['id']))
+                store.db.commit()
             watcher = start_watcher(store, args.interval)
             output({**result, 'tmux_session': session, 'tmux_socket': luna['tmux_socket'],
                     'luna_model': luna['model'], 'launched': created,
+                    'requested_luna_effort': effort,
+                    'luna_launch_effort': effort if created else luna['reasoning_effort'],
+                    'effort_restart_required': not created and luna['reasoning_effort'] != effort,
                     'workspace_trust': args.workspace_trust if created else 'existing-session',
                     'state': ('resuming' if created else 'bound') if luna['codex_thread_id'] else 'awaiting_actor_binding', 'watcher': watcher})
     finally:
@@ -435,6 +448,8 @@ def build_parser():
         start.add_argument('--' + name, required=True)
     start.add_argument('--astra-thread')
     start.add_argument('--luna-model', default=os.environ.get('ACLA_LUNA_MODEL', DEFAULT_MODEL))
+    start.add_argument('--luna-effort', choices=LUNA_EFFORTS,
+                       help='Reasoning effort: high by default; reuse saved effort on resume')
     start.add_argument('--interval', type=int, default=300)
     start.add_argument('--workspace-trust', choices=('trusted', 'configured'), default='trusted',
                        help='Trust the selected actor workspace for this launch (default), '

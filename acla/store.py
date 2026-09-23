@@ -79,6 +79,7 @@ class Store:
         self._ensure_column("agents", "codex_thread_id", "TEXT")
         self._ensure_column("agents", "codex_home", "TEXT")
         self._ensure_column("agents", "model", "TEXT")
+        self._ensure_column("agents", "reasoning_effort", "TEXT")
         self._ensure_column("pairs", "handoff", "TEXT")
         self._ensure_column("pairs", "approved", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("messages", "delivery_claim", "TEXT")
@@ -590,7 +591,8 @@ class Store:
         streams = self.db.execute("""SELECT p.*, a.name AS astra_name, a.tmux_session AS astra_session,
             a.codex_thread_id AS astra_codex_thread_id, a.codex_home AS astra_codex_home,
             l.name AS luna_name, l.tmux_session AS luna_session, l.codex_thread_id AS luna_codex_thread_id,
-            l.codex_home AS luna_codex_home, l.model AS luna_model, t.id AS thread_id,
+            l.codex_home AS luna_codex_home, l.model AS luna_model,
+            l.reasoning_effort AS luna_launch_effort, t.id AS thread_id,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND (m.legacy=0 OR m.delivered_at IS NULL)) AS pending_messages,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND m.legacy=0 AND m.inbox_token IS NULL) AS pending_available_messages,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND m.inbox_token IS NOT NULL) AS pending_claimed_messages,
