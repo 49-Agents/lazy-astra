@@ -24,7 +24,7 @@ def queue_message(thread_id: str, body: str, *, codex_home: str, workspace: str)
     if str(parsed) != thread_id:
         raise ValueError("thread_id must be a canonical UUID")
     if not Path(workspace).is_dir():
-        raise ValueError("workspace does not exist or is not a directory")
+        raise DeliveryUnavailable("workspace does not exist or is not a directory")
 
     env = os.environ.copy()
     env["CODEX_HOME"] = codex_home

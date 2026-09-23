@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -36,6 +37,7 @@ class CliWorkflowTests(unittest.TestCase):
         self.env.start()
         self.launcher = mock.patch("acla.cli.launch", return_value=True)
         self.mock_launch = self.launcher.start()
+        self.real_start_watcher = cli.start_watcher
         self.watcher = mock.patch("acla.cli.start_watcher", return_value={"session": "watcher-test"})
         self.mock_watcher = self.watcher.start()
 
@@ -207,6 +209,85 @@ class CliWorkflowTests(unittest.TestCase):
                 self.invoke("poll")
         self.assertEqual(queue.call_args.args[0], self.luna_one_thread)
         self.assertIn("ASTRA_APPROVED", queue.call_args.args[1])
+
+    def test_delivery_preflight_unavailable_stays_pending_then_retries_successfully(self):
+        actor = self.start_actor()
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
+            self.invoke("bind-session", "--luna-id", actor["luna_id"])
+        self.invoke("send", "--thread-id", actor["thread_id"], "--body", "Check delivery retry.",
+                    "--idempotency-key", "preflight-retry")
+        with mock.patch("acla.cli.verify_destination"), mock.patch(
+                "acla.cli.queue_message", side_effect=[delivery.DeliveryUnavailable("codex missing"), None]) as queue:
+            first = self.invoke("poll")
+            self.assertEqual(first["errors"][0]["state"], "pending")
+            store = self.store()
+            try:
+                message = store.messages(actor["thread_id"])[0]
+                self.assertEqual(message["delivery_state"], "pending")
+                self.assertIsNone(message["delivered_at"])
+            finally:
+                store.close()
+            second = self.invoke("poll")
+        self.assertEqual(queue.call_count, 2)
+        self.assertEqual(second["errors"], [])
+        self.assertEqual(len(second["delivered"]), 1)
+        store = self.store()
+        try:
+            message = store.messages(actor["thread_id"])[0]
+            self.assertEqual(message["delivery_state"], "delivered")
+            self.assertIsNotNone(message["delivered_at"])
+        finally:
+            store.close()
+
+    def test_approved_actor_resumes_for_pending_approval_then_stays_stopped(self):
+        actor = self.start_actor()
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
+            self.invoke("bind-session", "--luna-id", actor["luna_id"])
+        self.invoke("approve", "--thread-id", actor["thread_id"], "--body", "Approved.",
+                    "--idempotency-key", "final-approval")
+        launch_count = self.mock_launch.call_count
+
+        resumed = self.start_actor()
+        self.assertTrue(resumed["launched"])
+        self.assertEqual(resumed["state"], "resuming")
+        argv = self.mock_launch.call_args.args[2]
+        self.assertEqual(argv[:3], ["codex", "resume", self.luna_one_thread])
+        self.assertEqual(self.mock_launch.call_count, launch_count + 1)
+
+        with mock.patch("acla.cli.verify_destination"), mock.patch("acla.cli.queue_message"):
+            delivered = self.invoke("poll")
+        self.assertEqual(len(delivered["delivered"]), 1)
+        launch_count = self.mock_launch.call_count
+        done = self.start_actor()
+        self.assertEqual(done["state"], "approved")
+        self.assertFalse(done["launched"])
+        self.assertEqual(self.mock_launch.call_count, launch_count)
+
+    def test_source_changed_watcher_replaces_only_verified_owned_session(self):
+        store = self.store()
+        try:
+            identity = "watcher-" + hashlib.sha256(str(store.path.resolve()).encode()).hexdigest()[:12]
+            session = "acla-" + identity
+            with mock.patch("acla.cli.alive", return_value=True), \
+                 mock.patch("acla.cli.metadata", return_value={"ACLA_WATCHER_SOURCE": "old-source"}), \
+                 mock.patch("acla.cli.verify_destination") as verify, \
+                 mock.patch("acla.cli.stop_owned") as stop, \
+                 mock.patch("acla.cli.launch", return_value=True) as launch:
+                result = self.real_start_watcher(store, 23)
+            verify.assert_called_once_with(session, identity, identity, "watcher", cli.DEFAULT_SOCKET)
+            stop.assert_called_once_with(session, agent_id=identity, run_id=identity,
+                                         role="watcher", socket=cli.DEFAULT_SOCKET)
+            args, kwargs = launch.call_args
+            self.assertEqual(args[0], session)
+            self.assertEqual(kwargs["agent_id"], identity)
+            self.assertEqual(kwargs["run_id"], identity)
+            self.assertEqual(kwargs["role"], "watcher")
+            self.assertTrue(kwargs["env"]["ACLA_WATCHER_SOURCE"])
+            self.assertNotEqual(kwargs["env"]["ACLA_WATCHER_SOURCE"], "old-source")
+            self.assertEqual(result["session"], session)
+            self.assertEqual(result["interval"], 23)
+        finally:
+            store.close()
 
 
 if __name__ == "__main__":

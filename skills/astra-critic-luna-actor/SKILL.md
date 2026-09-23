@@ -61,7 +61,10 @@ If that environment variable is absent, use a known exact task UUID through
 
 Full messages arrive automatically in this Codex task through `codex queue`.
 Every envelope includes run, review-thread, sender, and message IDs, plus an exact
-reply command. Treat duplicate message IDs as a single instruction.
+reply command. Treat duplicate message IDs as a single instruction. Before acting,
+read the run status and latest thread history: messages can arrive out of order.
+Ignore reports for already approved actors and superseded earlier reports; never
+reopen work just because a delayed message arrives.
 
 When Luna reports, inspect the actual diff and meaningful verification evidence.
 Send concrete numbered corrections on that actor's review thread:

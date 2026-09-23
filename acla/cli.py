@@ -15,7 +15,7 @@ import time
 import uuid
 
 from .store import Store, new_id
-from .tmux import DEFAULT_SOCKET, launch, safe_session, stop_owned, verify_destination
+from .tmux import DEFAULT_SOCKET, alive, metadata, launch, safe_session, stop_owned, verify_destination
 from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -102,11 +102,18 @@ def start_watcher(store, interval):
     identity = 'watcher-' + digest
     session = 'acla-' + identity
     command = [sys.executable, str(ROOT / 'acla_cli.py'), '--state', str(store.path.resolve()), 'watch']
+    source = hashlib.sha256(str(ROOT).encode() + b''.join(
+        (ROOT / 'acla' / name).read_bytes() for name in ('cli.py', 'store.py', 'tmux.py', 'delivery.py'))).hexdigest()
+    if alive(session, DEFAULT_SOCKET):
+        verify_destination(session, identity, identity, 'watcher', DEFAULT_SOCKET)
+        if metadata(session, DEFAULT_SOCKET).get('ACLA_WATCHER_SOURCE') != source:
+            stop_owned(session, agent_id=identity, run_id=identity, role='watcher', socket=DEFAULT_SOCKET)
     store.db.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
     store.db.execute("INSERT INTO settings VALUES ('interval', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(interval),))
     store.db.commit()
     created = launch(session, str(store.path.parent.resolve()), command,
-                     agent_id=identity, run_id=identity, role='watcher', socket=DEFAULT_SOCKET)
+                     agent_id=identity, run_id=identity, role='watcher', socket=DEFAULT_SOCKET,
+                     env={'ACLA_WATCHER_SOURCE': source})
     return {'session': session, 'socket': DEFAULT_SOCKET, 'created': created, 'interval': interval}
 
 
@@ -137,7 +144,9 @@ def cmd_run_start(args):
                 luna_session=session, luna_socket=DEFAULT_SOCKET, luna_command=command,
                 luna_model=args.luna_model, handoff=handoff)
             luna = store.agent(result['luna_id'])
-            if store.status(run_id)['run']['state'] == 'approved':
+            approved = store.db.execute('SELECT approved FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['approved']
+            pending = store.db.execute('SELECT COUNT(*) FROM messages WHERE recipient_id=? AND delivered_at IS NULL', (luna['id'],)).fetchone()[0]
+            if approved and not pending:
                 output({**result, 'state': 'approved', 'launched': False})
                 return
             argv = ['codex']
@@ -155,7 +164,7 @@ def cmd_run_start(args):
             watcher = start_watcher(store, args.interval)
             output({**result, 'tmux_session': session, 'tmux_socket': luna['tmux_socket'],
                     'luna_model': luna['model'], 'launched': created,
-                    'state': 'ready' if luna['codex_thread_id'] else 'awaiting_actor_binding', 'watcher': watcher})
+                    'state': ('resuming' if created else 'bound') if luna['codex_thread_id'] else 'awaiting_actor_binding', 'watcher': watcher})
     finally:
         store.close()
 

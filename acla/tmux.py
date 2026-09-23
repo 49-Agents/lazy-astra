@@ -117,6 +117,8 @@ def launch(session: str, workspace: str, command: str | list[str], *, agent_id: 
     clean.extend(f"{key}={value}" for key, value in values.items())
     clean.extend(argv)
     args = ["new-session", "-d", "-s", session, "-c", workspace]
+    for key, value in values.items():
+        args.extend(["-e", f"{key}={value}"])
     _run(*args, "--", shlex.join(clean), socket=socket)
     _bind_created_session(session, agent_id, run_id, role, socket)
     pane = _run("list-panes", "-t", f"={session}:", "-F", "#{pane_id}\t#{pane_pid}", socket=socket).strip().splitlines()

@@ -38,7 +38,7 @@ class QueueDeliveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 delivery.queue_message("abcdef12-abcd-5678-1234-567812345678".upper(), "hello",
                                        codex_home="/tmp", workspace="/tmp")
-            with self.assertRaises(ValueError):
+            with self.assertRaises(delivery.DeliveryUnavailable):
                 delivery.queue_message(self.thread, "hello", codex_home="/tmp",
                                       workspace="/definitely/missing/acla-workspace")
             run.assert_not_called()
