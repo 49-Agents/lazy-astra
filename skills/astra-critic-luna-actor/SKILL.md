@@ -29,7 +29,8 @@ private. The delivery interval defaults to 300 seconds and is configurable.
 2. Split into independent workstreams only when their files and workspaces do not
    conflict. Give each stream a stable slug and Luna name.
 3. Start one Luna per stream. Each Luna must have exactly one Astra mapping and
-   exactly one thread. Use the local launcher:
+   exactly one thread. Run this from Astra's tmux session, or set
+   `ACLA_ASTRA_SESSION` and `ACLA_ASTRA_TMUX_SOCKET` first. Use the local launcher:
 
    ```bash
    $ACLA run-start --goal "<short goal>" --workspace "<luna workspace>" \
@@ -37,8 +38,10 @@ private. The delivery interval defaults to 300 seconds and is configurable.
    ```
 
    Save the returned `run_id`, `astra_id`, `luna_id`, `thread_id`, and
-   `tmux_session`. The default Luna command is `codex`; set `ACLA_LUNA_COMMAND`
-   or pass `--command` when another CLI is explicitly intended.
+   `tmux_session`, `luna_model`, and `watcher`. The default Luna command is
+   `codex --model gpt-5.6-sol`; pass `--luna-model` or `--command` when needed.
+   Startup is idempotent for a supplied `--run-id`; it reuses the saved Astra,
+   Luna, thread, and unique session instead of creating replacements.
 4. Send the complete handoff as a full message using the returned thread ID:
 
    ```bash
@@ -48,14 +51,10 @@ private. The delivery interval defaults to 300 seconds and is configurable.
 
    Do not call an inbox ID an attachment. The local thread is the mapping
    boundary. A Luna has its own tmux session and local agent ID.
-5. Keep delivery running in a separate terminal:
-
-   ```bash
-   $ACLA watch --interval "${ACLA_INTERVAL:-300}"
-   ```
-
-   Delivery pastes the full message into the recipient's tmux session and marks
-   it delivered only after tmux accepts it. A stopped Luna leaves its message
+5. The launcher starts and supervises one watcher for the state store. It polls
+   every five minutes by default and delivers the complete message to the owned
+   Astra or Luna tmux session. It refuses idle shells, foreign session metadata,
+   and duplicate watcher processes. A stopped recipient leaves its message
    pending until the session is available.
 6. When Luna replies, inspect the complete message and the repository diff.
    Read the thread with `$ACLA messages --thread-id '<thread>'` when the reply
