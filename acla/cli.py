@@ -22,6 +22,17 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL = 'gpt-6-luna'
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
 LUNA_REPORTING_POLICY = '''Luna communication and decision policy:
+ALLOWED SUBAGENT ROLES: exploration, implementation, and review only.
+FORBIDDEN SUBAGENT WORK: planning and designing, including authoring/revising
+implementation plans, architecture, task breakdowns, sequencing, or tradeoff
+decisions. Astra alone owns those decisions and final approval. This boundary
+also applies to any separately authorized nested subagents.
+Exploration returns facts/evidence/constraints. Implementation follows Astra's
+decided plan/design. Review reports defects/risks against supplied requirements;
+reviewing an existing plan/design never authorizes writing a replacement.
+If asked to plan or design, or if a missing decision blocks the assignment, use
+ask-question to request Astra's decision and pause affected work. Do not relabel
+planning as exploration/review or delegate it to another subagent.
 Reasoning effort must remain at least high. Astra selects high, xhigh, or max
 for the assignment; do not lower effort or enable fast/priority service.
 Execute the agreed handoff and Astra's explicit review instructions. Do not make
@@ -94,7 +105,8 @@ def bootstrap_message(result, store):
     luna = store.agent(result['luna_id'])
     command = helper(store)
     handoff = store.db.execute('SELECT handoff FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['handoff']
-    return f'''You are the implementation actor for an owner-authorized code review workflow.
+    return f'''You are an execution actor for an owner-authorized review workflow.
+Your allowed roles are exploration, implementation, and review. Never plan or design.
 First bind this actual Codex conversation by running:
 {command} bind-session --luna-id {luna['id']}
 The command reads your own CODEX_THREAD_ID. Never copy the parent's thread ID.
@@ -107,7 +119,7 @@ Selected model: {luna['model']}
 
 {LUNA_REPORTING_POLICY}
 
-Send your complete implementation report through this command (text on stdin):
+Send your complete assignment report through this command (text on stdin):
 {command} send-reply --luna-id {luna['id']} --body-file - --idempotency-key <unique-stable-key>
 Ask a question with:
 {command} ask-question --luna-id {luna['id']} --body-file - --idempotency-key <unique-stable-key>

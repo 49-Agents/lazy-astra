@@ -5,6 +5,14 @@ single skill by saying **run the astra critic luna actor** after discussing your
 issue with Astra. Astra prepares the handoff, launches actors in tmux, reviews
 reports, and sends corrections until it approves the work.
 
+**Subagents may explore, implement, and review; never plan or design.** Astra
+authors all plans/designs and decides architecture, scope, task breakdowns,
+sequencing, tradeoffs, and acceptance criteria. Exploration returns evidence;
+implementation follows Astra's decisions; review returns findings against the
+requirements, including when reviewing an Astra-authored plan. Missing decisions
+go back to Astra through `ask-question`. This applies to nested subagents too;
+renaming planning as exploration or review does not authorize it.
+
 Astra stays in the current Codex app or CLI task. Actors use tmux on the same
 host. Full messages travel through `codex queue` to exact Codex task UUIDs in both
 directions, with sender, run, review-thread, and message IDs. No external business platform service or

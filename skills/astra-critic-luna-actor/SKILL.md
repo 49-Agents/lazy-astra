@@ -16,6 +16,31 @@ explicitly authorizes sending the handoff, questions, reports, and review feedba
 between the actors and this critic. Repository, merge, and deployment authority
 still comes from the user's request and repository instructions.
 
+## Subagent role boundary — mandatory
+
+**Subagents may explore, implement, and review. They must never plan or design.**
+This applies to Luna actors and any other subagents used in this workflow,
+including nested delegation when separately authorized.
+
+- **Exploration:** inspect code, trace behavior, reproduce problems, and return
+  facts, evidence, constraints, and unanswered questions.
+- **Implementation:** execute Astra's already-decided plan and design within the
+  supplied scope and acceptance criteria.
+- **Review:** inspect an existing implementation or Astra-authored plan/design
+  against supplied requirements; report defects, risks, and supporting evidence.
+  Reviewing a plan does not authorize writing or redesigning one.
+- **Astra only:** author or revise plans, designs, architecture, task breakdowns,
+  implementation sequences, scope, acceptance criteria, and tradeoff decisions.
+  Astra also owns final approval and escalates owner decisions to the user.
+
+Never assign "create an implementation plan", "design the solution", "choose an
+architecture", or equivalent work to a subagent, even under an exploration or
+review label. If exploration/review exposes a planning or design gap, the subagent
+returns the finding or asks Astra a question and pauses affected work. Astra
+supplies the decision before implementation continues. Include the allowed role,
+expected output, and this boundary in every handoff. Do not delegate planning or
+design to another subagent to bypass the restriction.
+
 ## Locate the installed helper
 
 Resolve this loaded SKILL.md's path. The plugin root is **two directories above
@@ -34,7 +59,8 @@ If that environment variable is absent, use a known exact task UUID through
 
 ## Start the work
 
-1. Read the code and instructions. Write a thorough handoff containing the outcome,
+1. Read the code and instructions. Astra authors the plan/design and a thorough
+   handoff naming the actor's role (exploration, implementation, or review), outcome,
    repo and base commit, dedicated worktree/branch, constraints, ordered steps,
    acceptance criteria, meaningful checks, and risks. Prepare one worktree per
    independent actor to prevent concurrent edits. Save each handoff as a file.
