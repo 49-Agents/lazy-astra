@@ -20,7 +20,9 @@ credentials are needed. There is no terminal-paste delivery.
 
 Every actor launch and resume uses `danger-full-access` with approval policy
 `never`, as required by the owner. This gives Luna filesystem and network access
-without command approval prompts, including access to shared Git metadata. ACLA trusts the selected actor workspace for each launch
+without command approval prompts, including access to shared Git metadata.
+Actor launches disable the interactive CLI update check so unattended startup
+does not stop at an update menu. ACLA trusts the selected actor workspace for each launch
 and resume by default, using a Codex CLI configuration override. This applies to
 ACLA launches in any directory, including newly created worktrees. Trust allows
 Codex to load that workspace's project configuration and instructions.
