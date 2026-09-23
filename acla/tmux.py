@@ -78,9 +78,12 @@ def metadata(session: str, socket: str | None = None) -> dict[str, str]:
     return values
 
 
-def bind(session: str, agent_id: str, run_id: str, role: str, socket: str | None = None) -> None:
+def bind(session: str, agent_id: str, run_id: str, role: str, socket: str | None = None,
+         require_existing: bool = False) -> None:
     existing = metadata(session, socket)
     expected = {"ACLA_AGENT_ID": agent_id, "ACLA_RUN_ID": run_id, "ACLA_ROLE": role}
+    if require_existing and (existing.get("ACLA_AGENT_ID") != agent_id or existing.get("ACLA_ROLE") != role):
+        raise RuntimeError(f"tmux session {session} has no matching ownership metadata")
     for key, value in expected.items():
         if key in {"ACLA_AGENT_ID", "ACLA_ROLE"} and existing.get(key) and existing[key] != value:
             raise RuntimeError(f"tmux session {session} belongs to another {role} identity")
@@ -99,8 +102,9 @@ def pane_command(session: str, socket: str | None = None) -> str:
 
 
 def verify_destination(session: str, agent_id: str, run_id: str, role: str,
-                       socket: str | None = None, command: str | None = None) -> None:
-    bind(session, agent_id, run_id, role, socket)
+                       socket: str | None = None, command: str | None = None,
+                       require_existing: bool = False) -> None:
+    bind(session, agent_id, run_id, role, socket, require_existing=require_existing)
     current = pane_command(session, socket).lower()
     if current in SHELL_COMMANDS or current.endswith("/bash") or current.endswith("/zsh"):
         raise RuntimeError(f"tmux destination {session} is an idle shell, not the {role} runtime")
@@ -114,12 +118,13 @@ def verify_destination(session: str, agent_id: str, run_id: str, role: str,
 
 
 def wait_destination(session: str, agent_id: str, run_id: str, role: str,
-                     socket: str | None = None, command: str | None = None, timeout: float = 30) -> None:
+                     socket: str | None = None, command: str | None = None, timeout: float = 30,
+                     require_existing: bool = True) -> None:
     deadline = time.monotonic() + timeout
     last: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            verify_destination(session, agent_id, run_id, role, socket, command)
+            verify_destination(session, agent_id, run_id, role, socket, command, require_existing=require_existing)
             return
         except RuntimeError as exc:
             last = exc
@@ -131,7 +136,7 @@ def launch(session: str, workspace: str, command: str, *, agent_id: str, run_id:
            role: str, socket: str | None = None, env: dict[str, str] | None = None) -> bool:
     session = safe_session(session)
     if alive(session, socket):
-        verify_destination(session, agent_id, run_id, role, socket, command)
+        verify_destination(session, agent_id, run_id, role, socket, command, require_existing=True)
         return False
     if not os.path.isdir(workspace):
         raise ValueError(f"workspace does not exist: {workspace}")
@@ -149,13 +154,13 @@ def launch(session: str, workspace: str, command: str, *, agent_id: str, run_id:
 def deliver(session: str, body: str, *, agent_id: str, run_id: str, role: str,
             socket: str | None = None, command: str | None = None) -> None:
     """Verify the owned runtime, then paste and submit one complete message."""
-    verify_destination(session, agent_id, run_id, role, socket, command)
+    verify_destination(session, agent_id, run_id, role, socket, command, require_existing=True)
     buffer = "acla-" + str(os.getpid()) + "-" + str(time.time_ns())
     try:
         _run("load-buffer", "-b", buffer, "-", input_text=body, socket=socket)
         _run("paste-buffer", "-d", "-r", "-p", "-b", buffer, "-t", f"={session}:", socket=socket)
         time.sleep(0.2)
-        verify_destination(session, agent_id, run_id, role, socket, command)
+        verify_destination(session, agent_id, run_id, role, socket, command, require_existing=True)
         _run("send-keys", "-t", f"={session}:", "Enter", socket=socket)
     finally:
         subprocess.run([*_prefix(socket), "delete-buffer", "-b", buffer], capture_output=True, check=False)

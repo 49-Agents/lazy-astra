@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -119,6 +120,8 @@ def cmd_run_start(args) -> None:
         astra_socket=astra["socket"], astra_command=astra["command"], luna_name=args.luna_name,
         luna_id=luna_id, luna_workspace=luna_workspace, luna_session=luna_session,
         luna_socket=luna_socket, luna_command=command)
+    astra_row = store.agent(result["astra_id"])
+    bind(astra_row["tmux_session"], astra_row["id"], result["run_id"], "astra", astra_row["tmux_socket"], require_existing=False)
     luna = store.agent(result["luna_id"])
     created = launch(luna["tmux_session"], luna["workspace"], luna["command"], agent_id=luna["id"],
                      run_id=result["run_id"], role="luna", socket=luna["tmux_socket"],
@@ -159,24 +162,26 @@ def cmd_luna_message(args, marker: str) -> None:
 
 def cmd_poll(args) -> None:
     store = Store(args.state)
-    worker = args.worker_id or new_id()
-    delivered = []
-    rows = store.claim_pending(worker, args.limit, stale_after=max(30, args.interval * 3))
-    for row in rows:
-        recipient = store.agent(row["recipient_id"])
-        try:
-            if not recipient["tmux_session"] or not recipient["tmux_socket"]:
-                raise RuntimeError("recipient has no bound tmux destination")
-            deliver(recipient["tmux_session"], row["body"], agent_id=recipient["id"],
-                    run_id=store.db.execute("SELECT run_id FROM threads WHERE id=?", (row["thread_id"],)).fetchone()["run_id"],
-                    role=recipient["kind"], socket=recipient["tmux_socket"], command=recipient["command"])
-        except (RuntimeError, OSError, ValueError):
-            store.release_claim(row["id"], worker)
-            continue
-        store.mark_delivered(row["id"], worker)
-        delivered.append(row["id"])
-    print(json.dumps({"delivered": delivered, "checked": len(rows)}))
-    store.close()
+    try:
+        worker = args.worker_id or new_id()
+        delivered = []
+        rows = store.claim_pending(worker, args.limit, stale_after=max(30, args.interval * 3))
+        for row in rows:
+            recipient = store.agent(row["recipient_id"])
+            try:
+                if not recipient["tmux_session"] or not recipient["tmux_socket"]:
+                    raise RuntimeError("recipient has no bound tmux destination")
+                deliver(recipient["tmux_session"], row["body"], agent_id=recipient["id"],
+                        run_id=store.db.execute("SELECT run_id FROM threads WHERE id=?", (row["thread_id"],)).fetchone()["run_id"],
+                        role=recipient["kind"], socket=recipient["tmux_socket"], command=recipient["command"])
+            except (RuntimeError, OSError, ValueError):
+                store.release_claim(row["id"], worker)
+                continue
+            store.mark_delivered(row["id"], worker)
+            delivered.append(row["id"])
+        print(json.dumps({"delivered": delivered, "checked": len(rows)}))
+    finally:
+        store.close()
 
 
 def cmd_watch(args) -> None:
@@ -188,8 +193,11 @@ def cmd_watch(args) -> None:
         except BlockingIOError as exc:
             raise RuntimeError("another ACLA watcher already owns this state store") from exc
         while True:
-            cmd_poll(argparse.Namespace(state=args.state, limit=args.limit, interval=args.interval,
-                                        worker_id=args.worker_id))
+            try:
+                cmd_poll(argparse.Namespace(state=args.state, limit=args.limit, interval=args.interval,
+                                            worker_id=args.worker_id))
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
+                print(json.dumps({"watcher_error": str(exc)}), flush=True)
             if args.once:
                 return
             time.sleep(max(1, args.interval))
