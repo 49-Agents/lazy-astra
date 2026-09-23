@@ -1,10 +1,19 @@
 {
   "name": "astra-critic-luna-actor",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260923004747",
   "description": "Run an Astra critic and Luna actor review loop with a local inbox and tmux sessions.",
-  "author": {"name": "ACLA contributors"},
+  "author": {
+    "name": "ACLA contributors"
+  },
   "license": "MIT",
-  "keywords": ["astra", "luna", "critic", "actor", "inbox", "tmux"],
+  "keywords": [
+    "astra",
+    "luna",
+    "critic",
+    "actor",
+    "inbox",
+    "tmux"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Astra Critic Luna Actor",
@@ -12,7 +21,10 @@
     "longDescription": "A standalone local inbox, tmux launcher, and Codex skill for an Astra critic and Luna actor review loop.",
     "developerName": "ACLA contributors",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
     "defaultPrompt": "Run the Astra Critic Luna Actor workflow."
   }
 }
