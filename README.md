@@ -18,6 +18,9 @@ credentials are needed. There is no terminal-paste delivery.
 - Astra and actors must be reachable by the same host's Codex queue facility.
   This version is not a cross-machine inbox service.
 
+Every actor launch and resume explicitly uses `service_tier="default"` (normal
+speed, not fast/priority), overriding inherited speed preferences.
+
 Every actor launch and resume uses `danger-full-access` with approval policy
 `never`, as required by the owner. This gives Luna filesystem and network access
 without command approval prompts, including access to shared Git metadata.

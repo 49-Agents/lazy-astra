@@ -57,7 +57,11 @@ If that environment variable is absent, use a known exact task UUID through
    alternative. `--interval` changes the shared state store's polling interval;
    the default is five minutes. Empty polls do not invoke a model.
 
-### Permissions and workspace trust
+### Model speed, permissions, and workspace trust
+
+Luna must use normal speed, never fast mode. The launcher explicitly sets
+`service_tier="default"` on every launch and resume. Do not enable fast/priority
+mode. Existing sessions need a controlled resume to adopt changed launch settings.
 
 The owner requires full access for every Luna: the launcher always passes
 `--sandbox danger-full-access --ask-for-approval never` on launch and resume.
