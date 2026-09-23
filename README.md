@@ -54,6 +54,13 @@ Codex thread using `bind-session`, then works and uses `send-reply` or
 proof of readiness: inspect `status` and the returned tmux session if binding
 has not completed.
 
+Luna sends no interim progress reports or periodic updates. It sends one complete
+report at the end of the assignment, and one at the end of each requested revision
+round, then waits for Astra's review. Blockers, planning input, ambiguity, and
+decisions go to Astra through `ask-question`; Luna waits for direction before
+doing the affected work and does not decide independently. Final approval needs
+no acknowledgement. The launcher includes this policy on initial launch and resume.
+
 The launcher starts one watcher per SQLite store. The default interval is 300
 seconds; a later run-start updates the shared interval. Multiple independent
 actors use the same run UUID and goal, different names and worktrees. Their

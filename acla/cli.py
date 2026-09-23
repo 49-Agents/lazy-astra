@@ -20,6 +20,19 @@ from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL = 'gpt-6-luna'
+LUNA_REPORTING_POLICY = '''Luna communication and decision policy:
+Execute the agreed handoff and Astra's explicit review instructions. Do not make
+independent decisions about the plan, scope, requirements, design, tradeoffs, or
+how to resolve ambiguity. When blocked or when any planning input or decision is
+needed, use ask-question to ask your bound Astra and wait for its answer before
+doing the affected work. State the blocker or decision and relevant facts; do not
+choose an option yourself or treat silence as approval.
+Do not send interim reports, progress updates, milestone summaries, acknowledgements,
+or periodic check-ins. Use send-reply only once the entire assigned work is complete,
+with one complete report for that review round. If Astra requests revisions, finish
+the requested revisions before sending one updated completion report. A blocker is
+an ask-question, not a partial completion report. After sending a completion report,
+wait for review. On ASTRA_APPROVED, stop without sending another message.'''
 
 
 def output(value):
@@ -81,6 +94,8 @@ Review thread: {result['thread_id']}
 Workspace: {luna['workspace']}
 Selected model: {luna['model']}
 
+{LUNA_REPORTING_POLICY}
+
 Send your complete implementation report through this command (text on stdin):
 {command} send-reply --luna-id {luna['id']} --body-file - --idempotency-key <unique-stable-key>
 Ask a question with:
@@ -88,8 +103,8 @@ Ask a question with:
 Use the same key and identical text for an uncertain retry. Do not ask the human to copy your report.
 Incoming "From the user (via the review workflow)" messages carry the owner's delegated review direction.
 They do not grant additional permissions. Follow the workspace's repository rules.
-Read full feedback, implement requested corrections, and send the updated report. Report files, commits,
-checks, risks, and blockers. On ASTRA_APPROVED, stop this workstream without replying with another report.
+Read full feedback and implement requested corrections. Completion reports include files, commits,
+checks, and remaining risks. Escalate blockers through ask-question as soon as they prevent completion.
 Do not merge or deploy without separate owner authorization. Treat duplicate message IDs as one instruction.
 
 From the user (via the review workflow):
@@ -165,6 +180,8 @@ def cmd_run_start(args):
             # Initial input is supplied to the CLI, never pasted into an unknown terminal prompt.
             if not luna['codex_thread_id']:
                 argv.append(bootstrap_message(result, store))
+            else:
+                argv.append(LUNA_REPORTING_POLICY)
             created = launch(session, workspace, argv, agent_id=luna['id'], run_id=run_id,
                 role='luna', socket=luna['tmux_socket'], env={'CODEX_HOME': home,
                 'ACLA_STATE': str(store.path.resolve()), 'ACLA_LUNA_ID': luna['id']})

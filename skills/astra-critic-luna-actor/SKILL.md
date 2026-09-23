@@ -84,6 +84,22 @@ after one restart with the updated launcher, report the exact blocker.
 
 ## Review the inbox
 
+Luna executes the agreed handoff; Astra owns decisions. Include this policy in
+every handoff: no interim reports, progress updates, milestone summaries,
+acknowledgements, or periodic check-ins. Luna sends one completion report only
+after the entire assignment is finished, then waits for review. Each requested
+revision round ends with one updated completion report after all revisions are
+finished. Approval ends the exchange without a reply.
+
+When blocked or needing planning input, a decision, or clarification, Luna must
+use `ask-question` and wait for Astra's answer before doing the affected work.
+Luna supplies facts and the question; it must not choose a plan, resolve ambiguity,
+change scope/design/requirements, or make tradeoffs independently. A blocker is
+a question, not an interim report. Answer with explicit direction; if the decision
+requires owner input, ask the owner and leave the affected work paused. Do not
+request progress reports from actors. The launcher supplies this policy on new
+launches and resumes; already running actors need an inbox instruction to adopt it.
+
 Full messages arrive automatically in this Codex task through `codex queue`.
 Every envelope includes run, review-thread, sender, and message IDs, plus an exact
 reply command. Treat duplicate message IDs as a single instruction. Before acting,
