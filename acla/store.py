@@ -63,8 +63,12 @@ class Store:
             delivery_error TEXT
         );
         CREATE TABLE IF NOT EXISTS idempotency (
-            sender_id TEXT NOT NULL, key TEXT NOT NULL, message_id INTEGER NOT NULL REFERENCES messages(id),
+            sender_id TEXT NOT NULL, key TEXT NOT NULL, message_id INTEGER NOT NULL REFERENCES messages(id), reply_to INTEGER,
             PRIMARY KEY(sender_id, key)
+        );
+        CREATE TABLE IF NOT EXISTS inbox_notifications (
+            recipient_id TEXT PRIMARY KEY REFERENCES agents(id), notification_id TEXT NOT NULL,
+            state TEXT NOT NULL, token TEXT, claimed_at TEXT, created_at TEXT NOT NULL, error TEXT
         );
         CREATE INDEX IF NOT EXISTS messages_pending ON messages(recipient_id, delivered_at, id);
         """)
@@ -81,6 +85,13 @@ class Store:
         self._ensure_column("messages", "delivery_state", "TEXT NOT NULL DEFAULT 'pending'")
         self._ensure_column("messages", "delivery_worker", "TEXT")
         self._ensure_column("messages", "delivery_error", "TEXT")
+        self._ensure_column("messages", "handled_at", "TEXT")
+        self._ensure_column("messages", "inbox_token", "TEXT")
+        self._ensure_column("messages", "inbox_claimed_at", "TEXT")
+        self._ensure_column("messages", "legacy", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column("idempotency", "reply_to", "INTEGER")
+        # Rows predating inbox consumption are intentionally excluded from automatic wakeups.
+        self.db.execute("UPDATE messages SET legacy=0 WHERE handled_at IS NOT NULL")
         self.db.execute("UPDATE messages SET delivery_state='delivered' WHERE delivered_at IS NOT NULL AND delivery_state='pending'")
         self.db.commit()
 
@@ -288,7 +299,7 @@ class Store:
             raise ValueError("Luna has no matching Astra thread")
         return row
 
-    def send(self, thread_id: str, sender_id: str, body: str, key: str | None = None) -> dict:
+    def send(self, thread_id: str, sender_id: str, body: str, key: str | None = None, reply_to: int | None = None) -> dict:
         if not body.strip():
             raise ValueError("message body cannot be empty")
         self.db.execute("BEGIN IMMEDIATE")
@@ -301,10 +312,10 @@ class Store:
             raise ValueError("sender is not a participant in this thread")
         recipient = thread["luna_id"] if sender_id == thread["astra_id"] else thread["astra_id"]
         if key:
-            old = self.db.execute("""SELECT m.* FROM idempotency i JOIN messages m ON m.id=i.message_id
+            old = self.db.execute("""SELECT m.*,i.reply_to FROM idempotency i JOIN messages m ON m.id=i.message_id
                 WHERE i.sender_id=? AND i.key=?""", (sender_id, key)).fetchone()
             if old:
-                if old["thread_id"] != thread_id or old["body"] != body:
+                if old["thread_id"] != thread_id or old["body"] != body or old["reply_to"] != reply_to:
                     self.db.rollback()
                     raise ValueError("idempotency conflict: key already names different message text or thread")
                 self.db.commit()
@@ -313,16 +324,107 @@ class Store:
         if pair and pair["approved"]:
             self.db.rollback()
             raise ValueError("run stream is approved; ordinary messages are closed")
+        if reply_to is not None:
+            target = self.db.execute("SELECT * FROM messages WHERE id=?", (reply_to,)).fetchone()
+            if not target or target["thread_id"] != thread_id or target["recipient_id"] != sender_id or target["handled_at"] is not None:
+                self.db.rollback()
+                raise ValueError("reply target must be an incoming message in this thread")
         cur = self.db.execute("""INSERT INTO messages
-            (thread_id,sender_id,recipient_id,body,created_at) VALUES(?,?,?,?,?)""",
+            (thread_id,sender_id,recipient_id,body,created_at,legacy) VALUES(?,?,?,?,?,0)""",
                               (thread_id, sender_id, recipient, body, now()))
         message_id = cur.lastrowid
         if key:
-            self.db.execute("INSERT INTO idempotency VALUES (?, ?, ?)", (sender_id, key, message_id))
+            self.db.execute("INSERT INTO idempotency(sender_id,key,message_id,reply_to) VALUES (?, ?, ?, ?)", (sender_id, key, message_id, reply_to))
+        if reply_to is not None:
+            self.db.execute("UPDATE messages SET handled_at=?,inbox_token=NULL,inbox_claimed_at=NULL WHERE id=?", (now(), reply_to))
+            self._refresh_notification(sender_id)
+        self._refresh_notification(recipient)
         self.db.commit()
         return dict(self.db.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone())
 
-    def approve(self, thread_id: str, astra_id: str, body: str, key: str) -> dict:
+    def _refresh_notification(self, recipient_id: str) -> None:
+        pending = self.db.execute("SELECT 1 FROM messages WHERE recipient_id=? AND legacy=0 AND handled_at IS NULL AND inbox_token IS NULL LIMIT 1", (recipient_id,)).fetchone()
+        notification = self.db.execute("SELECT * FROM inbox_notifications WHERE recipient_id=?", (recipient_id,)).fetchone()
+        if not pending:
+            self.db.execute("DELETE FROM inbox_notifications WHERE recipient_id=?", (recipient_id,))
+        elif not notification:
+            self.db.execute("INSERT INTO inbox_notifications(recipient_id,notification_id,state,created_at) VALUES(?,?,'pending',?) ON CONFLICT(recipient_id) DO UPDATE SET notification_id=excluded.notification_id,state='pending',token=NULL,claimed_at=NULL,created_at=excluded.created_at,error=NULL",
+                            (recipient_id, new_id(), now()))
+
+    def claim_inbox(self, recipient_id: str, limit: int = 20, message_id: int | None = None, lease_seconds: int = 900) -> dict:
+        if limit < 1 or limit > 100:
+            raise ValueError("inbox limit must be between 1 and 100")
+        stamp = now(); token = new_id()
+        cutoff = datetime.fromtimestamp(datetime.now().timestamp() - lease_seconds, timezone.utc).isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            # Expired claims become available and refresh the coalesced wakeup.
+            self.db.execute("UPDATE messages SET inbox_token=NULL,inbox_claimed_at=NULL WHERE recipient_id=? AND handled_at IS NULL AND inbox_claimed_at<?", (recipient_id, cutoff))
+            self._refresh_notification(recipient_id)
+            if message_id is not None:
+                rows = self.db.execute("SELECT * FROM messages WHERE id=? AND recipient_id=? AND handled_at IS NULL AND inbox_token IS NULL", (message_id,recipient_id)).fetchall()
+            else:
+                rows = self.db.execute("SELECT * FROM messages WHERE recipient_id=? AND legacy=0 AND handled_at IS NULL AND inbox_token IS NULL ORDER BY id LIMIT ?", (recipient_id,limit)).fetchall()
+            for row in rows:
+                self.db.execute("UPDATE messages SET inbox_token=?,inbox_claimed_at=? WHERE id=?", (token,stamp,row['id']))
+            self._refresh_notification(recipient_id)
+            self.db.commit()
+            return {"token": token if rows else None, "messages": [dict(r) for r in rows]}
+        except Exception:
+            self.db.rollback(); raise
+
+    def acknowledge(self, recipient_id: str, token: str, ids: list[int]) -> int:
+        if not ids:
+            raise ValueError("provide at least one message ID")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            for mid in ids:
+                cur = self.db.execute("UPDATE messages SET handled_at=?,inbox_token=NULL,inbox_claimed_at=NULL WHERE id=? AND recipient_id=? AND inbox_token=? AND handled_at IS NULL", (now(),mid,recipient_id,token))
+                if cur.rowcount != 1:
+                    raise ValueError(f"message {mid} is not claimed by this inbox token")
+            self._refresh_notification(recipient_id)
+            pending = self.db.execute("SELECT 1 FROM messages WHERE recipient_id=? AND legacy=0 AND handled_at IS NULL AND inbox_token IS NULL LIMIT 1", (recipient_id,)).fetchone()
+            if pending:
+                self.db.execute("UPDATE inbox_notifications SET state='pending',notification_id=?,created_at=?,error=NULL WHERE recipient_id=? AND state='sent'", (new_id(), now(), recipient_id))
+            self.db.commit(); return len(ids)
+        except Exception:
+            self.db.rollback(); raise
+
+    def notification_batch(self, limit: int = 100) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT n.*,a.codex_thread_id,a.codex_home,a.workspace,a.kind,a.tmux_session,a.tmux_socket FROM inbox_notifications n JOIN agents a ON a.id=n.recipient_id WHERE n.state='pending' ORDER BY n.created_at LIMIT ?", (limit,)).fetchall()
+
+    def notification_dispatching(self, recipient_id: str) -> None:
+        cur = self.db.execute("UPDATE inbox_notifications SET state='dispatching' WHERE recipient_id=? AND state='pending'", (recipient_id,))
+        if cur.rowcount != 1: raise ValueError('notification is not pending')
+        self.db.commit()
+
+    def notification_result(self, recipient_id: str, state: str, error: str | None = None) -> None:
+        self.db.execute("UPDATE inbox_notifications SET state=?,error=? WHERE recipient_id=?", (state,error,recipient_id)); self.db.commit()
+
+    def notification_recover(self, stale_after: int = 900) -> None:
+        cutoff = datetime.fromtimestamp(datetime.now().timestamp() - stale_after, timezone.utc).isoformat()
+        self.db.execute("UPDATE inbox_notifications SET state='uncertain',error=COALESCE(error,'dispatch lease expired') WHERE state='dispatching' AND created_at<?", (cutoff,)); self.db.commit()
+
+    def resolve_notification(self, recipient_id: str, retry: bool) -> None:
+        state = 'pending' if retry else 'sent'
+        cur = self.db.execute("UPDATE inbox_notifications SET state=?,error=NULL,created_at=? WHERE recipient_id=? AND state='uncertain'", (state,now(),recipient_id))
+        if cur.rowcount != 1:
+            raise ValueError('notification is not awaiting uncertain-delivery resolution')
+        self.db.commit()
+
+    def recover_inbox_claims(self, lease_seconds: int = 900) -> int:
+        cutoff = datetime.fromtimestamp(datetime.now().timestamp() - lease_seconds, timezone.utc).isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            recipients = [r[0] for r in self.db.execute("SELECT DISTINCT recipient_id FROM messages WHERE inbox_token IS NOT NULL AND inbox_claimed_at<?", (cutoff,))]
+            cur = self.db.execute("UPDATE messages SET inbox_token=NULL,inbox_claimed_at=NULL WHERE inbox_token IS NOT NULL AND inbox_claimed_at<?", (cutoff,))
+            for recipient in recipients:
+                self._refresh_notification(recipient)
+            self.db.commit(); return cur.rowcount
+        except Exception:
+            self.db.rollback(); raise
+
+    def approve(self, thread_id: str, astra_id: str, body: str, key: str, reply_to: int | None = None) -> dict:
         if not body.strip():
             raise ValueError("message body cannot be empty")
         body = "ASTRA_APPROVED\n" + body
@@ -333,20 +435,28 @@ class Store:
                 raise ValueError(f"unknown thread: {thread_id}")
             if astra_id != thread["astra_id"]:
                 raise ValueError("only the thread's Astra can approve")
-            old = self.db.execute("SELECT m.* FROM idempotency i JOIN messages m ON m.id=i.message_id WHERE i.sender_id=? AND i.key=?",
+            old = self.db.execute("SELECT m.*,i.reply_to FROM idempotency i JOIN messages m ON m.id=i.message_id WHERE i.sender_id=? AND i.key=?",
                                   (astra_id, key)).fetchone()
             if old:
-                if old["thread_id"] != thread_id or old["body"] != body:
+                if old["thread_id"] != thread_id or old["body"] != body or old["reply_to"] != reply_to:
                     raise ValueError("idempotency conflict: key already names different message text or thread")
                 self.db.commit()
                 return dict(old)
             pair = self.db.execute("SELECT approved FROM pairs WHERE luna_id=?", (thread["luna_id"],)).fetchone()
             if pair and pair["approved"]:
                 raise ValueError("stream is already approved; approval retry must use its original idempotency key")
-            cur = self.db.execute("INSERT INTO messages(thread_id,sender_id,recipient_id,body,created_at) VALUES(?,?,?,?,?)",
+            if reply_to is not None:
+                target = self.db.execute("SELECT * FROM messages WHERE id=?", (reply_to,)).fetchone()
+                if not target or target["thread_id"] != thread_id or target["recipient_id"] != astra_id or target["handled_at"] is not None:
+                    raise ValueError("reply target must be an unhandled incoming message in this thread")
+            cur = self.db.execute("INSERT INTO messages(thread_id,sender_id,recipient_id,body,created_at,legacy) VALUES(?,?,?,?,?,0)",
                                   (thread_id, astra_id, thread["luna_id"], body, now()))
             message_id = cur.lastrowid
-            self.db.execute("INSERT INTO idempotency VALUES(?,?,?)", (astra_id, key, message_id))
+            self.db.execute("INSERT INTO idempotency(sender_id,key,message_id,reply_to) VALUES(?,?,?,?)", (astra_id, key, message_id, reply_to))
+            if reply_to is not None:
+                self.db.execute("UPDATE messages SET handled_at=?,inbox_token=NULL,inbox_claimed_at=NULL WHERE id=?", (now(), reply_to))
+                self._refresh_notification(astra_id)
+            self._refresh_notification(thread["luna_id"])
             self.db.execute("UPDATE pairs SET approved=1 WHERE luna_id=?", (thread["luna_id"],))
             remaining = self.db.execute("SELECT COUNT(*) FROM pairs WHERE run_id=? AND approved=0", (thread["run_id"],)).fetchone()[0]
             if not remaining:

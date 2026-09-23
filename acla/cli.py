@@ -28,7 +28,13 @@ needed, use ask-question to ask your bound Astra and wait for its answer before
 doing the affected work. State the blocker or decision and relevant facts; do not
 choose an option yourself or treat silence as approval.
 Do not send interim reports, progress updates, milestone summaries, acknowledgements,
-or periodic check-ins. Use send-reply only once the entire assigned work is complete,
+or periodic check-ins. Read full incoming messages only through the bound helper's
+inbox next; acknowledge only exact processed IDs with inbox acknowledge and its token.
+Do not act directly from delayed full envelopes without reconciling their ID through
+inbox next --message-id ID. Delayed wakeups with an empty inbox are silent: no chat
+acknowledgement and no actor message. Use --reply-to ID to atomically consume only
+the exact incoming message answered.
+Use send-reply only once the entire assigned work is complete,
 with one complete report for that review round. If Astra requests revisions, finish
 the requested revisions before sending one updated completion report. A blocker is
 an ask-question, not a partial completion report. After sending a completion report,
@@ -100,6 +106,11 @@ Send your complete implementation report through this command (text on stdin):
 {command} send-reply --luna-id {luna['id']} --body-file - --idempotency-key <unique-stable-key>
 Ask a question with:
 {command} ask-question --luna-id {luna['id']} --body-file - --idempotency-key <unique-stable-key>
+Read incoming work only through:
+{command} inbox next
+After processing the returned IDs, acknowledge exactly those IDs with:
+{command} inbox acknowledge --token <claim-token> --message-id <ID> [--message-id <ID> ...]
+Link a response to the consumed message using --reply-to <ID> on send-reply/ask-question.
 Use the same key and identical text for an uncertain retry. Do not ask the human to copy your report.
 Incoming "From the user (via the review workflow)" messages carry the owner's delegated review direction.
 They do not grant additional permissions. Follow the workspace's repository rules.
@@ -160,7 +171,7 @@ def cmd_run_start(args):
                 luna_model=args.luna_model, handoff=handoff)
             luna = store.agent(result['luna_id'])
             approved = store.db.execute('SELECT approved FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['approved']
-            pending = store.db.execute('SELECT COUNT(*) FROM messages WHERE recipient_id=? AND delivered_at IS NULL', (luna['id'],)).fetchone()[0]
+            pending = store.db.execute('SELECT COUNT(*) FROM inbox_notifications WHERE recipient_id=?', (luna['id'],)).fetchone()[0]
             if approved and not pending:
                 output({**result, 'state': 'approved', 'launched': False})
                 return
@@ -220,7 +231,7 @@ def cmd_send(args):
         thread = require_astra(store, args.thread_id)
         if args.sender_id and args.sender_id != thread['astra_id']:
             raise ValueError('Sender does not match this Astra')
-        output(store.send(args.thread_id, thread['astra_id'], read_body(args), args.idempotency_key))
+        output(store.send(args.thread_id, thread['astra_id'], read_body(args), args.idempotency_key, args.reply_to))
     finally:
         store.close()
 
@@ -235,23 +246,15 @@ def cmd_luna_message(args):
         body = read_body(args)
         if args.command == 'ask-question':
             body = 'LUNA_QUESTION\n' + body
-        output(store.send(thread['id'], args.luna_id, body, args.idempotency_key))
+        output(store.send(thread['id'], args.luna_id, body, args.idempotency_key, args.reply_to))
     finally:
         store.close()
 
 
 def envelope(store, row):
-    thread = store.db.execute('SELECT * FROM threads WHERE id=?', (row['thread_id'],)).fetchone()
-    sender = store.agent(row['sender_id'])
-    recipient = store.agent(row['recipient_id'])
-    label = 'From the user (via the review workflow):' if recipient['kind'] == 'luna' else f"From Luna {sender['name']}:"
-    reply = (f"{helper(store)} send --thread-id {row['thread_id']} --body-file - --idempotency-key <stable-key>"
-             if recipient['kind'] == 'astra' else
-             f"{helper(store)} send-reply --luna-id {recipient['id']} --body-file - --idempotency-key <stable-key>")
-    return (f"[ACLA message {row['id']}; run {thread['run_id']}; thread {row['thread_id']}; sender {sender['id']}]\n"
-            f"Reply command (body on stdin): {reply}\n"
-            'Handle this message ID once. Continue the bound review workflow.\n\n'
-            f"{label}\n{row['body']}")
+    return (f"[ACLA inbox wake-up {row['notification_id']}] New review messages may be available.\n"
+            f"Run: {helper(store)} inbox next\n"
+            "If inbox next returns no messages, remain silent: do not acknowledge in chat or send an actor message.")
 
 
 def cmd_poll(args, *, quiet=False):
@@ -259,36 +262,37 @@ def cmd_poll(args, *, quiet=False):
     worker = new_id()
     delivered, errors = [], []
     try:
-        # One transport worker across poll and watch; no batches waiting for expiring leases.
+        # One coalesced notification dispatcher across poll and watch.
         with state_lock(store, 'delivery', blocking=False):
-            rows = store.claim_pending(worker, args.limit)
+            store.recover_inbox_claims()
+            store.notification_recover()
+            rows = store.notification_batch(args.limit)
             for row in rows:
                 recipient = store.agent(row['recipient_id'])
                 if not recipient['codex_thread_id']:
-                    store.release_claim(row['id'], worker, 'Recipient has not bound its Codex task yet')
                     continue
                 try:
                     if recipient['kind'] == 'luna':
-                        thread = store.db.execute('SELECT run_id FROM threads WHERE id=?', (row['thread_id'],)).fetchone()
+                        thread = store.db.execute('SELECT run_id FROM pairs WHERE luna_id=?', (recipient['id'],)).fetchone()
                         verify_destination(recipient['tmux_session'], recipient['id'], thread['run_id'],
                             'luna', recipient['tmux_socket'], require_existing=True)
                 except (RuntimeError, OSError) as exc:
-                    store.release_claim(row['id'], worker, str(exc))
-                    errors.append({'message_id': row['id'], 'state': 'pending', 'error': str(exc)})
+                    store.notification_result(recipient['id'], 'pending', str(exc))
+                    errors.append({'recipient_id': recipient['id'], 'state': 'pending', 'error': str(exc)})
                     continue
-                store.mark_dispatching(row['id'], worker)
+                store.notification_dispatching(recipient['id'])
                 try:
                     queue_message(recipient['codex_thread_id'], envelope(store, row),
                                   codex_home=recipient['codex_home'], workspace=recipient['workspace'])
                 except DeliveryUnavailable as exc:
-                    store.reset_undispatched(row['id'], worker, str(exc))
-                    errors.append({'message_id': row['id'], 'state': 'pending', 'error': str(exc)})
+                    store.notification_result(recipient['id'], 'pending', str(exc))
+                    errors.append({'recipient_id': recipient['id'], 'state': 'pending', 'error': str(exc)})
                 except (DeliveryUncertain, OSError, RuntimeError) as exc:
-                    store.mark_uncertain(row['id'], worker, str(exc))
-                    errors.append({'message_id': row['id'], 'state': 'uncertain', 'error': str(exc)})
+                    store.notification_result(recipient['id'], 'uncertain', str(exc))
+                    errors.append({'recipient_id': recipient['id'], 'state': 'uncertain', 'error': str(exc)})
                 else:
-                    store.mark_delivered(row['id'], worker)
-                    delivered.append(row['id'])
+                    store.notification_result(recipient['id'], 'sent')
+                    delivered.append(recipient['id'])
         if not quiet or delivered or errors:
             output({'delivered': delivered, 'errors': errors})
     finally:
@@ -323,7 +327,7 @@ def cmd_approve(args):
     store = Store(args.state)
     try:
         thread = require_astra(store, args.thread_id)
-        output(store.approve(args.thread_id, thread['astra_id'], read_body(args), args.idempotency_key))
+        output(store.approve(args.thread_id, thread['astra_id'], read_body(args), args.idempotency_key, args.reply_to))
     finally:
         store.close()
 
@@ -340,6 +344,45 @@ def cmd_messages(args):
     store = Store(args.state)
     try:
         output(store.messages(args.thread_id))
+    finally:
+        store.close()
+
+
+def bound_recipient(store):
+    row = store.find_codex_agent('astra', native_thread(), codex_home())
+    if row is None:
+        row = store.find_codex_agent('luna', native_thread(), codex_home())
+    if row is None:
+        raise ValueError('This Codex task is not a bound ACLA recipient')
+    return row
+
+
+def cmd_inbox_next(args):
+    store = Store(args.state)
+    try:
+        recipient = bound_recipient(store)
+        output(store.claim_inbox(recipient['id'], args.limit, args.message_id))
+    finally:
+        store.close()
+
+
+def cmd_inbox_ack(args):
+    store = Store(args.state)
+    try:
+        recipient = bound_recipient(store)
+        output({'acknowledged': store.acknowledge(recipient['id'], args.token, args.message_id)})
+    finally:
+        store.close()
+
+
+def cmd_resolve_notification(args):
+    store = Store(args.state)
+    try:
+        recipient = bound_recipient(store)
+        if recipient['id'] != args.recipient_id:
+            raise ValueError('notification recipient does not match this Codex task')
+        store.resolve_notification(recipient['id'], retry=args.retry)
+        output({'recipient_id': recipient['id'], 'state': 'pending' if args.retry else 'sent'})
     finally:
         store.close()
 
@@ -394,12 +437,22 @@ def build_parser():
         c.add_argument('--thread-id' if name in ('send', 'approve') else '--luna-id', required=True)
         c.add_argument('--body'); c.add_argument('--body-file')
         c.add_argument('--idempotency-key', required=True)
+        c.add_argument('--reply-to', type=int)
         if name == 'send':
             c.add_argument('--sender-id')
     c = command('poll', cmd_poll); c.add_argument('--limit', type=int, default=100)
     c = command('watch', cmd_watch); c.add_argument('--interval', type=int); c.add_argument('--once', action='store_true')
     c = command('status', cmd_status); c.add_argument('--run-id', required=True)
     c = command('messages', cmd_messages); c.add_argument('--thread-id', required=True)
+    c = command('inbox', lambda args: None)
+    inbox = c.add_subparsers(dest='inbox_command', required=True)
+    nxt = inbox.add_parser('next'); nxt.set_defaults(func=cmd_inbox_next)
+    nxt.add_argument('--limit', type=int, default=20); nxt.add_argument('--message-id', type=int)
+    ack = inbox.add_parser('acknowledge'); ack.set_defaults(func=cmd_inbox_ack)
+    ack.add_argument('--token', required=True); ack.add_argument('--message-id', type=int, action='append', required=True)
+    c = command('resolve-notification', cmd_resolve_notification); c.add_argument('--recipient-id', required=True)
+    choice = c.add_mutually_exclusive_group(required=True)
+    choice.add_argument('--retry', action='store_true'); choice.add_argument('--delivered', action='store_true')
     c = command('resolve-delivery', cmd_resolve); c.add_argument('--message-id', type=int, required=True)
     choice = c.add_mutually_exclusive_group(required=True)
     choice.add_argument('--retry', action='store_true'); choice.add_argument('--delivered', action='store_true')

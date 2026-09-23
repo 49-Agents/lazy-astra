@@ -71,7 +71,7 @@ session names contain complete run and actor UUIDs.
 
 ```bash
 python3 /absolute/plugin/acla_cli.py send --thread-id '<review thread>' \
-  --body-file /absolute/review.md --idempotency-key '<saved key>'
+  --body-file /absolute/review.md --idempotency-key '<saved key>' [--reply-to ID]
 python3 /absolute/plugin/acla_cli.py approve --thread-id '<review thread>' \
   --body-file /absolute/approval.md --idempotency-key '<saved key>'
 python3 /absolute/plugin/acla_cli.py status --run-id '<saved UUID>'
@@ -103,13 +103,33 @@ full access and workspace trust before starting Codex; no terminal keystrokes ar
 the same state path, run ID, actor name, workspace, model, and handoff. A bound
 actor resumes its saved conversation; an unbound actor receives bootstrap again.
 
+Messages remain in read-only thread history. Delivery queues one small wake-up per
+recipient across review threads; it directs the bound task to `inbox next`, where
+full bodies are returned. Several pending messages coalesce into one wake-up.
+Claims are recipient-bound to the current Codex thread and home, limited to 1–100
+messages (default 20), and expire after 15 minutes. Acknowledge only processed IDs
+with the returned token. A reply can use `--reply-to ID` to mark that incoming
+message handled in the same transaction as sending; approval never consumes other
+messages implicitly. Empty or delayed wake-ups must be silent.
+
 Delivery claims are transactional, and the delivery worker is locked per store.
 A successful queue call records transport acceptance, not model completion.
 Ambiguous queue failures and interrupted dispatches become `uncertain`. Inspect
-the exact destination before `resolve-delivery --message-id ID --delivered` or
-`--retry`; automatic retries could duplicate work. Messages carry stable IDs so
+the exact destination before `resolve-notification --recipient-id ID --delivered`
+or `--retry`, or `resolve-delivery --message-id ID --delivered` / `--retry` for
+legacy message deliveries; automatic retries could duplicate work. Messages carry stable IDs so
 agents can also recognize a repeated message. Offline/unbound actors keep their
-messages pending. Watcher diagnostics are visible in its tmux session.
+messages pending. Legacy messages already in existing stores are marked legacy
+during migration and are not automatically renotified, so migration cannot flood
+old history. Reconcile an old queued envelope by ID with `inbox next --message-id ID`,
+then acknowledge it normally. Legacy pending/uncertain transport rows remain intact
+and can still be explicitly resolved. No history or Codex queue rows are deleted.
+Watcher diagnostics are visible in its tmux session.
+
+```bash
+python3 /absolute/plugin/acla_cli.py inbox next --limit 20
+python3 /absolute/plugin/acla_cli.py inbox acknowledge --token '<claim token>' --message-id 123
+```
 
 ## Installation and checks
 

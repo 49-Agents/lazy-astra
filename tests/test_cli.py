@@ -132,6 +132,19 @@ class CliWorkflowTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_inbox_claims_and_acknowledgements_are_bound_to_native_recipient(self):
+        actor = self.start_actor()
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
+            self.invoke("bind-session", "--luna-id", actor["luna_id"])
+        self.invoke("send", "--thread-id", actor["thread_id"], "--body", "owner task", "--idempotency-key", "inbox-identity")
+        as_astra = self.invoke("inbox", "next")
+        self.assertEqual(as_astra['messages'], [])
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
+            as_luna = self.invoke("inbox", "next")
+            self.assertEqual(len(as_luna['messages']), 1)
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.astra_thread}):
+            self.invoke_fails("inbox", "acknowledge", "--token", as_luna['token'], "--message-id", str(as_luna['messages'][0]['id']), contains="not claimed")
+
     def test_two_actors_route_enveloped_messages_to_their_bound_threads(self):
         one = self.start_actor("parser", self.workspace_one)
         two = self.start_actor("tests", self.workspace_two)
@@ -146,13 +159,11 @@ class CliWorkflowTests(unittest.TestCase):
             self.invoke("poll")
         routed = {call.args[0]: call.args[1] for call in queue.call_args_list}
         self.assertEqual(set(routed), {self.luna_one_thread, self.luna_two_thread})
-        for actor, native_id, content in ((one, self.luna_one_thread, "parser test"),
-                                          (two, self.luna_two_thread, "test fixture")):
+        for actor, native_id in ((one, self.luna_one_thread),
+                                          (two, self.luna_two_thread)):
             envelope = routed[native_id]
-            self.assertIn(actor["run_id"], envelope)
-            self.assertIn(actor["thread_id"], envelope)
-            self.assertIn(actor["astra_id"], envelope)
-            self.assertIn(content, envelope)
+            self.assertIn("inbox next", envelope)
+            self.assertNotIn("parser test", envelope)
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
             self.invoke("send-reply", "--luna-id", one["luna_id"], "--body", "Parser test added.",
                         "--idempotency-key", "report-1")
@@ -166,10 +177,7 @@ class CliWorkflowTests(unittest.TestCase):
             by_destination.setdefault(call.args[0], []).append(call.args[1])
         self.assertEqual(set(by_destination), {self.astra_thread})
         aggregate = "\n".join(by_destination[self.astra_thread])
-        self.assertIn(one["thread_id"], aggregate)
-        self.assertIn(two["thread_id"], aggregate)
-        self.assertIn(one["luna_id"], aggregate)
-        self.assertIn(two["luna_id"], aggregate)
+        self.assertIn("inbox next", aggregate)
 
     def test_approval_loop_and_uncertain_delivery_require_explicit_resolution(self):
         actor = self.start_actor()
@@ -180,35 +188,32 @@ class CliWorkflowTests(unittest.TestCase):
         with mock.patch("acla.cli.queue_message") as queue:
             self.invoke("poll")
         self.assertEqual(queue.call_args.args[0], self.astra_thread)
-        self.assertIn("Initial implementation report", queue.call_args.args[1])
+        self.assertIn("inbox next", queue.call_args.args[1])
         self.invoke("send", "--thread-id", actor["thread_id"], "--body", "Please fix edge case X.",
                     "--idempotency-key", "correction")
         with mock.patch("acla.cli.verify_destination"), mock.patch("acla.cli.queue_message") as queue:
             self.invoke("poll")
         self.assertEqual(queue.call_args.args[0], self.luna_one_thread)
-        self.assertIn("Please fix edge case X", queue.call_args.args[1])
+        self.assertIn("inbox next", queue.call_args.args[1])
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
             self.invoke("send-reply", "--luna-id", actor["luna_id"], "--body", "Edge case fixed.",
                         "--idempotency-key", "report-final")
         with mock.patch("acla.cli.queue_message") as queue:
-            self.invoke("poll")
-        self.assertIn("Edge case fixed", queue.call_args.args[1])
+            empty = self.invoke("poll")
+        queue.assert_not_called()
+        self.assertEqual(empty["delivered"], [])
 
         self.invoke("approve", "--thread-id", actor["thread_id"], "--body", "Approved.",
                     "--idempotency-key", "approval")
-        with mock.patch("acla.cli.verify_destination"), mock.patch(
-                "acla.cli.queue_message", side_effect=delivery.DeliveryUncertain("ambiguous")):
+        with mock.patch("acla.cli.queue_message") as queue:
             polled = self.invoke("poll")
-        approval_message = polled["errors"][0]["message_id"]
-        self.assertEqual(polled["errors"][0]["state"], "uncertain")
+        queue.assert_not_called()  # the recipient still has an outstanding wake-up
         status = self.invoke("status", "--run-id", self.run_id)
         self.assertEqual(status["run"]["state"], "approved")
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.astra_thread}):
-            with mock.patch("acla.cli.verify_destination"), mock.patch("acla.cli.queue_message") as queue:
-                self.invoke("resolve-delivery", "--message-id", str(approval_message), "--retry")
+            with mock.patch("acla.cli.queue_message") as queue:
                 self.invoke("poll")
-        self.assertEqual(queue.call_args.args[0], self.luna_one_thread)
-        self.assertIn("ASTRA_APPROVED", queue.call_args.args[1])
+        queue.assert_not_called()
 
     def test_delivery_preflight_unavailable_stays_pending_then_retries_successfully(self):
         actor = self.start_actor()
@@ -234,8 +239,9 @@ class CliWorkflowTests(unittest.TestCase):
         store = self.store()
         try:
             message = store.messages(actor["thread_id"])[0]
-            self.assertEqual(message["delivery_state"], "delivered")
-            self.assertIsNotNone(message["delivered_at"])
+            self.assertEqual(message["delivery_state"], "pending")
+            notification = store.db.execute("SELECT state FROM inbox_notifications WHERE recipient_id=?", (actor["luna_id"],)).fetchone()
+            self.assertEqual(notification["state"], "sent")
         finally:
             store.close()
 
@@ -257,6 +263,9 @@ class CliWorkflowTests(unittest.TestCase):
         with mock.patch("acla.cli.verify_destination"), mock.patch("acla.cli.queue_message"):
             delivered = self.invoke("poll")
         self.assertEqual(len(delivered["delivered"]), 1)
+        with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
+            batch = self.invoke("inbox", "next")
+            self.invoke("inbox", "acknowledge", "--token", batch['token'], "--message-id", str(batch['messages'][0]['id']))
         launch_count = self.mock_launch.call_count
         done = self.start_actor()
         self.assertEqual(done["state"], "approved")

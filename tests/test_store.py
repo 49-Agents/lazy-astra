@@ -153,6 +153,66 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.db.execute("SELECT goal FROM runs WHERE id='old-run'").fetchone()["goal"], "old goal")
         self.assertIn("codex_thread_id", {row["name"] for row in self.store.db.execute("PRAGMA table_info(agents)")})
         self.assertEqual(self.store.db.execute("SELECT delivery_state FROM messages WHERE id=1").fetchone()["delivery_state"], "delivered")
+        self.assertEqual(self.store.db.execute("SELECT legacy FROM messages WHERE id=1").fetchone()["legacy"], 1)
+
+    def test_claim_ack_reply_and_legacy_targeting(self):
+        ids = start(self.store)
+        first = self.store.send(ids['thread_id'], ids['astra_id'], 'question', 'q')
+        self.store.send(ids['thread_id'], ids['astra_id'], 'another', 'q2')
+        a = self.store.claim_inbox(ids['luna_id'], limit=2)
+        self.assertEqual([m['id'] for m in a['messages']], [first['id'], first['id'] + 1])
+        self.assertEqual(self.store.claim_inbox(ids['luna_id'])['messages'], [])
+        self.store.send(ids['thread_id'], ids['luna_id'], 'answer', 'r', reply_to=first['id'])
+        self.assertIsNotNone(self.store.messages(ids['thread_id'])[0]['handled_at'])
+        with self.assertRaises(ValueError):
+            self.store.acknowledge(ids['luna_id'], a['token'], [first['id']])
+        self.store.acknowledge(ids['luna_id'], a['token'], [first['id'] + 1])
+        self.assertEqual(self.store.claim_inbox(ids['luna_id'])['messages'], [])
+
+    def test_reply_validation_and_idempotency_conflict_do_not_consume(self):
+        one = start(self.store)
+        two = start(self.store, luna_name='Luna 2')
+        msg = self.store.send(one['thread_id'], one['astra_id'], 'question', 'question')
+        with self.assertRaises(ValueError):
+            self.store.send(two['thread_id'], two['astra_id'], 'bad reply', 'bad', reply_to=msg['id'])
+        self.assertIsNone(self.store.db.execute('SELECT handled_at FROM messages WHERE id=?', (msg['id'],)).fetchone()[0])
+        self.store.send(one['thread_id'], one['luna_id'], 'reply', 'reply-key', reply_to=msg['id'])
+        with self.assertRaisesRegex(ValueError, 'idempotency conflict'):
+            self.store.send(one['thread_id'], one['luna_id'], 'different', 'reply-key', reply_to=None)
+
+    def test_expired_inbox_claim_restores_one_wakeup(self):
+        ids = start(self.store)
+        self.store.send(ids['thread_id'], ids['astra_id'], 'work', 'lease-work')
+        batch = self.store.claim_inbox(ids['luna_id'])
+        self.assertEqual(self.store.notification_batch(), [])
+        self.assertEqual(self.store.recover_inbox_claims(lease_seconds=-1), 1)
+        self.assertEqual(len(self.store.notification_batch()), 1)
+        recovered = self.store.claim_inbox(ids['luna_id'])
+        self.assertEqual([m['id'] for m in recovered['messages']], [batch['messages'][0]['id']])
+
+    def test_recipient_wakeup_coalesces_and_reply_to_removes_stale_wakeup(self):
+        ids = start(self.store)
+        first = self.store.send(ids['thread_id'], ids['astra_id'], 'one', 'coalesce-1')
+        notification = self.store.db.execute('SELECT notification_id FROM inbox_notifications WHERE recipient_id=?', (ids['luna_id'],)).fetchone()[0]
+        second = self.store.send(ids['thread_id'], ids['astra_id'], 'two', 'coalesce-2')
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM inbox_notifications WHERE recipient_id=?', (ids['luna_id'],)).fetchone()[0], 1)
+        self.assertEqual(self.store.db.execute('SELECT notification_id FROM inbox_notifications WHERE recipient_id=?', (ids['luna_id'],)).fetchone()[0], notification)
+        batch = self.store.claim_inbox(ids['luna_id'])
+        self.assertEqual([m['id'] for m in batch['messages']], [first['id'], second['id']])
+
+        other = start(self.store, run_id='other-run', luna_name='Other Luna')
+        target = self.store.send(other['thread_id'], other['astra_id'], 'question', 'proactive')
+        self.store.send(other['thread_id'], other['luna_id'], 'answered before poll', 'proactive-reply', reply_to=target['id'])
+        self.assertIsNone(self.store.db.execute('SELECT 1 FROM inbox_notifications WHERE recipient_id=?', (other['luna_id'],)).fetchone())
+
+    def test_uncertain_wakeup_is_quarantined_but_explicit_inbox_still_works(self):
+        ids = start(self.store)
+        self.store.send(ids['thread_id'], ids['astra_id'], 'work', 'uncertain-work')
+        self.store.notification_dispatching(ids['luna_id'])
+        self.store.notification_result(ids['luna_id'], 'uncertain', 'ambiguous')
+        self.assertEqual(self.store.notification_batch(), [])
+        self.assertEqual(len(self.store.claim_inbox(ids['luna_id'])['messages']), 1)
+        self.assertIsNone(self.store.db.execute('SELECT 1 FROM inbox_notifications WHERE recipient_id=?', (ids['luna_id'],)).fetchone())
 
 
 if __name__ == "__main__":

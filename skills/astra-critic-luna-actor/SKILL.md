@@ -22,6 +22,10 @@ Resolve this loaded SKILL.md's path. The plugin root is **two directories above
 its containing skill directory** and contains `acla_cli.py` and `acla/`.
 Use that absolute root for all commands, including after compaction. Do not assume
 `~/astra-critic-luna-actor` contains the same installed version.
+For this local deployment only, `/home/example/plugins/astra-critic-luna-actor` is a
+documented helper alias; generic package code must not depend on that path. If an
+older task has a historical helper path in its bootstrap, first check the current
+installed skill root and use its helper for new operations.
 
 In the examples, replace `/absolute/plugin` with that root. Use quoted paths.
 The helper binds Astra from `CODEX_THREAD_ID`; it never guesses a task by its name.
@@ -104,10 +108,19 @@ requires owner input, ask the owner and leave the affected work paused. Do not
 request progress reports from actors. The launcher supplies this policy on new
 launches and resumes; already running actors need an inbox instruction to adopt it.
 
-Full messages arrive automatically in this Codex task through `codex queue`.
-Every envelope includes run, review-thread, sender, and message IDs, plus an exact
-reply command. Treat duplicate message IDs as a single instruction. Before acting,
-read the run status and latest thread history: messages can arrive out of order.
+Queue notifications contain no full body. They only say to read `inbox next`;
+several messages for one recipient coalesce into one wake-up across review threads.
+The command returns full messages and an expiring claim token, bound to the current
+native Codex thread and home. Process only returned IDs and acknowledge exactly the
+IDs processed with `inbox acknowledge --token TOKEN --message-id ID`. The default
+batch is 20 (maximum 100); claims expire after 15 minutes. An empty inbox or delayed
+duplicate wake-up requires no chat response and no actor message. Do not act on a
+delayed full envelope from an older workflow until reconciling its message ID with
+`inbox next --message-id ID`. Thread history remains read-only. A `--reply-to ID`
+on send, question, or approval atomically consumes only that exact incoming message;
+approval does not mark any other history handled.
+
+Before acting, read the run status and latest thread history: messages can arrive out of order.
 Ignore reports for already approved actors and superseded earlier reports; never
 reopen work just because a delayed message arrives.
 
@@ -116,7 +129,7 @@ Send concrete numbered corrections on that actor's review thread:
 
 ```bash
 python3 /absolute/plugin/acla_cli.py send --thread-id '<review-thread UUID>' \
-  --body-file '/absolute/review.md' --idempotency-key '<saved unique key>'
+  --body-file '/absolute/review.md' --idempotency-key '<saved unique key>' [--reply-to ID]
 ```
 
 Use `ASTRA_REVIEW` at the start of requested revisions. Answer questions on the
@@ -159,6 +172,10 @@ python3 /absolute/plugin/acla_cli.py resolve-delivery --message-id 123 --deliver
 # Only when inspection establishes that retry is appropriate:
 python3 /absolute/plugin/acla_cli.py resolve-delivery --message-id 123 --retry
 ```
+
+For an uncertain coalesced wake-up, inspect that exact Codex task before running
+`resolve-notification --recipient-id ID --delivered` or `--retry`. The command
+works only from the recipient's own bound Codex task.
 
 For an owner-requested stop or controlled restart, `stop-actor --luna-id '<ID>'`
 checks the saved tmux ownership and retains the conversation and messages.
