@@ -114,6 +114,32 @@ python3 /absolute/plugin/acla_cli.py messages --thread-id '<review thread>'
 Approval queues `ASTRA_APPROVED`. The run becomes approved after every actor's
 workstream is approved. Nothing is automatically merged or deployed.
 
+## Optional native review loop
+
+Add `--reviewLoop true --n_reviewers 3` to `run-start` to enable review after
+implementation and before the executor reports to Astra. Defaults for new actors
+are `reviewLoop=false` and `n_reviewers=3`; both persist per actor and are reported
+by status. Omitted options retain saved settings on resume. Changing settings for
+a live actor requires stop/resume; the helper does not silently interrupt it.
+
+The executor creates exactly that many native Codex subagents, inheriting its
+model and full-access settings. Every reviewer gets the same complete current
+Astra plan and worktree, with no conversation fork or specialized review areas.
+They only inspect whether the implementation matches the plan: omissions,
+discrepancies and unplanned additions. No code edits, file writes, tests/builds,
+planning/design, or nested reviewers. Each replies only to the executor with
+at most 500 words of evidence-backed findings. Full access remains enabled;
+the no-edit restriction is an instruction, not a filesystem sandbox.
+
+The executor treats the reports as fallible intern feedback: independently
+confirms findings, fixes only those it judges valid within the plan, and sends
+one final report to Astra after fixes. Design/scope ambiguities still go to Astra.
+It runs one batch per implementation/revision round, using batches if native
+concurrency is limited. No recursive review loop or requirement for consensus.
+Missing native tools or failed reviewers must be reported, not counted as success.
+The gate is delivered in the actor's bootstrap/resume policy; it is not a new
+tmux service or a machine-enforced certification of review completion.
+
 ## Persistence and recovery
 
 State defaults to `~/.astra-critic-luna-actor/state.sqlite3`, configurable through

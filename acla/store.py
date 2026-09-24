@@ -80,6 +80,8 @@ class Store:
         self._ensure_column("agents", "codex_home", "TEXT")
         self._ensure_column("agents", "model", "TEXT")
         self._ensure_column("agents", "reasoning_effort", "TEXT")
+        self._ensure_column("agents", "review_loop", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("agents", "n_reviewers", "INTEGER NOT NULL DEFAULT 3")
         self._ensure_column("pairs", "handoff", "TEXT")
         self._ensure_column("pairs", "approved", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("messages", "delivery_claim", "TEXT")
@@ -190,8 +192,13 @@ class Store:
                   luna_name: str, luna_id: str | None, luna_workspace: str,
                   luna_session: str, luna_socket: str, luna_command: str | None,
                   astra_thread_id: str | None = None, codex_home: str | None = None,
-                  luna_model: str | None = None, handoff: str | None = None) -> dict:
+                  luna_model: str | None = None, handoff: str | None = None,
+                  review_loop: bool | None = None, n_reviewers: int | None = None) -> dict:
         """Atomically create or reuse the complete run identity."""
+        if review_loop is not None and type(review_loop) is not bool:
+            raise ValueError('reviewLoop must be a boolean')
+        if n_reviewers is not None and (type(n_reviewers) is not int or n_reviewers < 1):
+            raise ValueError('n_reviewers must be a positive integer')
         if astra_thread_id:
             try:
                 astra_thread_id = str(uuid.UUID(astra_thread_id))
@@ -259,6 +266,10 @@ class Store:
             self.db.execute("INSERT OR IGNORE INTO pairs(luna_id,astra_id,run_id) VALUES(?,?,?)",
                             (actual_luna, actual_astra, run_id))
             self.db.execute("UPDATE pairs SET handoff=COALESCE(handoff, ?) WHERE luna_id=?", (handoff, actual_luna))
+            if review_loop is not None:
+                self.db.execute('UPDATE agents SET review_loop=? WHERE id=?', (int(review_loop), actual_luna))
+            if n_reviewers is not None:
+                self.db.execute('UPDATE agents SET n_reviewers=? WHERE id=?', (n_reviewers, actual_luna))
             thread_id = self._thread(run_id, actual_astra, actual_luna)
             self.db.commit()
         except Exception:
@@ -593,6 +604,7 @@ class Store:
             l.name AS luna_name, l.tmux_session AS luna_session, l.codex_thread_id AS luna_codex_thread_id,
             l.codex_home AS luna_codex_home, l.model AS luna_model,
             l.reasoning_effort AS luna_launch_effort, t.id AS thread_id,
+            l.review_loop AS reviewLoop, l.n_reviewers AS n_reviewers,
             CASE WHEN l.model='local-model' THEN 0 ELSE 1 END AS reasoning_effort_supported,
             CASE WHEN l.model='local-model' THEN 'upstream-default-unmapped' ELSE 'codex-effort' END AS reasoning_mode,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND (m.legacy=0 OR m.delivered_at IS NULL)) AS pending_messages,
@@ -603,7 +615,8 @@ class Store:
             (SELECT n.error FROM inbox_notifications n WHERE n.recipient_id=l.id) AS inbox_notification_error
             FROM pairs p JOIN agents a ON a.id=p.astra_id JOIN agents l ON l.id=p.luna_id
             LEFT JOIN threads t ON t.luna_id=p.luna_id WHERE p.run_id=?""", (run_id,)).fetchall()
-        return {"run": dict(run), "recipients": recipients, "streams": [dict(row) for row in streams]}
+        return {"run": dict(run), "recipients": recipients,
+                "streams": [{**dict(row), "reviewLoop": bool(row['reviewLoop'])} for row in streams]}
 
     def set_run_state(self, run_id: str, state: str) -> None:
         self.db.execute("UPDATE runs SET state=?, updated_at=? WHERE id=?", (state, now(), run_id))

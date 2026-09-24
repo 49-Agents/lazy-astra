@@ -156,6 +156,54 @@ after one restart with the updated launcher, report the exact blocker.
 
 ## Review the inbox
 
+### Optional executor review loop
+
+`run-start --reviewLoop true --n_reviewers 3` enables the executor's native
+review loop. `reviewLoop` is a boolean (new-actor default **false**);
+`n_reviewers` is a positive integer (default **3**). Both are saved per actor,
+shown by run-start/status, and preserved when omitted on resume. The equivalent
+kebab-case flags are `--review-loop` and `--n-reviewers`. Stop/resume the same
+actor before changing these settings for an existing live terminal.
+
+When enabled, after implementation and before reporting to Astra, the executor
+creates exactly `n_reviewers` **native Codex subagents**, never tmux/ACLA actors.
+They inherit the executor's model and full-access/never-approval configuration.
+Use the default native agent role, not a restricted/custom review role. If native
+delegation or the required permission inheritance is unavailable, ask Astra;
+do not silently bypass the configured review. Limited slots allow sequential
+batches, not a reduced total count. This explicitly authorizes these review-only
+children; it does not authorize planning/design delegation or recursive reviews.
+
+Give all reviewers **identical self-contained input**: the full current
+Astra-authored plan, including explicit amendments, and the absolute implementation
+worktree path. Do not fork the executor's conversation or provide different areas,
+security/performance roles, leading conclusions, or other reviewers' findings.
+Keep the worktree unchanged while reviews run. Their only question is whether
+the code executes the plan exactly: missing requirements, implementation
+discrepancies, or behavior outside the plan. No unrelated efficiency/style review,
+alternative designs, edits, tests/builds, file writes, or further subagents.
+Each reviewer replies only to the executor, in **at most 500 words**, citing
+plan requirements and file/line evidence. No findings is valid; uncertainty must
+be labeled. Full access is their execution mode; no edits is a task constraint,
+not an OS sandbox guarantee. The launcher supplies the same prompt template to
+the executor on both bootstrap and resume.
+
+The executor treats reviewers as **interns**, not peers or decision-makers.
+After collecting every reply, independently confirm each finding against the
+plan and code. Apply a fix only when it fits the existing plan and the executor
+finds the feedback valid; reject unsupported feedback rather than blindly
+following it or taking a vote. Correcting confirmed implementation mismatches is
+authorized. New plans/designs/scope choices remain exclusively Astra's job—ask
+when one is needed. Inspect the final diff after fixes, then send the ordinary
+single completion report to Astra, including reviewer IDs, accepted/rejected
+findings with reasons, fixes and unresolved questions. Do not send interim reviews.
+
+One reviewer batch per completed implementation/revision round. Do not repeat
+until consensus or apply the loop to exploration-only/review-only actors or the
+reviewers themselves. Failed/missing reviewer replies are not clean reviews.
+These are instructions for the native agent workflow, not a separate tmux review
+service or proof that the reviews occurred; Astra checks the reported evidence.
+
 Luna executes the agreed handoff; Astra owns decisions. Include this policy in
 every handoff: no interim reports, progress updates, milestone summaries,
 acknowledgements, or periodic check-ins. Luna sends one completion report only
