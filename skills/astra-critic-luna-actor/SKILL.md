@@ -159,7 +159,7 @@ after one restart with the updated launcher, report the exact blocker.
 ### Optional executor review loop
 
 `run-start --reviewLoop true --n_reviewers 3` enables the executor's native
-review loop. `reviewLoop` is a boolean (new-actor default **false**);
+review loop. `reviewLoop` is a boolean (new-actor default **true**);
 `n_reviewers` is a positive integer (default **3**). Both are saved per actor,
 shown by run-start/status, and preserved when omitted on resume. The equivalent
 kebab-case flags are `--review-loop` and `--n-reviewers`. Stop/resume the same
@@ -168,6 +168,8 @@ actor before changing these settings for an existing live terminal.
 When enabled, after implementation and before reporting to Astra, the executor
 creates exactly `n_reviewers` **native Codex subagents**, never tmux/ACLA actors.
 They inherit the executor's model and full-access/never-approval configuration.
+New executors and their reviewers default to Local model. Do not select a
+GPT reviewer for a DeepSeek executor. `--reviewLoop false` explicitly opts out.
 Use the default native agent role, not a restricted/custom review role. If native
 delegation or the required permission inheritance is unavailable, ask Astra;
 do not silently bypass the configured review. Limited slots allow sequential

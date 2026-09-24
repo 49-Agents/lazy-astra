@@ -118,12 +118,13 @@ workstream is approved. Nothing is automatically merged or deployed.
 
 Add `--reviewLoop true --n_reviewers 3` to `run-start` to enable review after
 implementation and before the executor reports to Astra. Defaults for new actors
-are `reviewLoop=false` and `n_reviewers=3`; both persist per actor and are reported
+are `reviewLoop=true` and `n_reviewers=3`; both persist per actor and are reported
 by status. Omitted options retain saved settings on resume. Changing settings for
 a live actor requires stop/resume; the helper does not silently interrupt it.
 
 The executor creates exactly that many native Codex subagents, inheriting its
-model and full-access settings. Every reviewer gets the same complete current
+model and full-access settings. New executors default to `local-model`, so
+their native reviewers use DeepSeek too. Use `--reviewLoop false` to opt out. Every reviewer gets the same complete current
 Astra plan and worktree, with no conversation fork or specialized review areas.
 They only inspect whether the implementation matches the plan: omissions,
 discrepancies and unplanned additions. No code edits, file writes, tests/builds,

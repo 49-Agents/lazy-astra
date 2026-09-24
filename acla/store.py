@@ -260,6 +260,8 @@ class Store:
                 self._insert_agent("luna", luna_name, workspace=luna_workspace, tmux_session=luna_session,
                                    tmux_socket=luna_socket, command=luna_command, agent_id=actual_luna,
                                    codex_home=codex_home, model=luna_model)
+                # Enable for new actors; additive migration preserves older actors' policy.
+                self.db.execute('UPDATE agents SET review_loop=1 WHERE id=?', (actual_luna,))
             pair = self.db.execute("SELECT * FROM pairs WHERE luna_id=?", (actual_luna,)).fetchone()
             if pair and (pair["run_id"] != run_id or pair["astra_id"] != actual_astra):
                 raise ValueError("Luna is already bound to another Astra/run")

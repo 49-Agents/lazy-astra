@@ -554,7 +554,7 @@ def build_parser():
                        help='GPT actors only: high by default; unavailable for Local model')
     start.add_argument('--interval', type=int, default=300)
     start.add_argument('--reviewLoop', '--review-loop', dest='review_loop', type=boolean,
-                       help='true/false: native plan-conformance review gate (new actors default false)')
+                       help='true/false: native plan-conformance review gate (new actors default true)')
     start.add_argument('--n_reviewers', '--n-reviewers', dest='n_reviewers', type=positive_integer,
                        help='Number of identical independent native reviews (new actors default 3)')
     start.add_argument('--workspace-trust', choices=('trusted', 'configured'), default='trusted',
