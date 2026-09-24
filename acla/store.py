@@ -593,6 +593,8 @@ class Store:
             l.name AS luna_name, l.tmux_session AS luna_session, l.codex_thread_id AS luna_codex_thread_id,
             l.codex_home AS luna_codex_home, l.model AS luna_model,
             l.reasoning_effort AS luna_launch_effort, t.id AS thread_id,
+            CASE WHEN l.model='local-model' THEN 0 ELSE 1 END AS reasoning_effort_supported,
+            CASE WHEN l.model='local-model' THEN 'upstream-default-unmapped' ELSE 'codex-effort' END AS reasoning_mode,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND (m.legacy=0 OR m.delivered_at IS NULL)) AS pending_messages,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND m.legacy=0 AND m.inbox_token IS NULL) AS pending_available_messages,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND m.inbox_token IS NOT NULL) AS pending_claimed_messages,

@@ -1,13 +1,13 @@
 ---
 name: astra-critic-luna-actor
-description: "Invoke when the user says 'run the astra critic luna actor' or explicitly requests the Astra–Luna review workflow. Keep Astra in the current Codex app or CLI task; launch GPT-6 Luna actors in tmux, exchange full inbox messages, and review until approved."
+description: "Invoke when the user says 'run the astra critic luna actor' or explicitly requests the Astra–Luna review workflow. Keep Astra in the current Codex app or CLI task; launch Local model actors in tmux, exchange full inbox messages, and review until approved."
 ---
 
 # Astra Critic Luna Actor
 
 The secret phrase is **run the astra critic luna actor**, ignoring case and hyphens.
 This is a standalone plugin. It needs Python 3.10+, tmux, a signed-in Codex CLI
-with `codex queue`, and the requested model (default `gpt-6-luna`). No external business platform
+with `codex queue`, and the requested model (default `local-model`). No external business platform
 service, business identity, or API key setup is involved.
 
 Act as the critic in this existing Codex task. Do not start another Astra task.
@@ -76,7 +76,7 @@ If that environment variable is absent, use a known exact task UUID through
      --handoff-file '/absolute/handoff.md' --interval 300
    ```
 
-   The launcher selects GPT-6 Luna, supplies the complete handoff in the initial
+   The launcher selects Local model, supplies the complete handoff in the initial
    CLI prompt, and starts one watcher. It returns the run, actor, review-thread,
    and tmux identities. Save them. `awaiting_actor_binding` means the process
    started but has not yet registered its actual Codex conversation. Check status;
@@ -89,12 +89,34 @@ If that environment variable is absent, use a known exact task UUID through
 
 ### Model speed, permissions, and workspace trust
 
-Luna reasoning effort has a floor of **high**. Astra chooses the effort when
+**Use Local model for new actors by default.** The historical Luna name and
+`--luna-model` flag remain for compatibility. Astra stays the critic. Use the
+existing Codex CLI and configured Local provider router; do not switch to the separate
+Claude Code worker launcher. This machine routes `local-model` through
+`http://127.0.0.1:18445/v1` to the friend's hosted DeepSeek server. The router and
+model catalog must already be configured in the actor's CODEX_HOME. An explicit
+`--luna-model` (or ACLA_LUNA_MODEL for new actors) is an intentional override;
+never silently fall back to an OpenAI model if DeepSeek is unavailable.
+
+For **Local model**, omit `--luna-effort`. The adapter does not map high/xhigh/max
+to upstream reasoning; an explicit effort flag is rejected. The launcher uses
+Codex catalog value `none` to override inherited GPT effort and reports
+`reasoning_effort_supported=false`, `reasoning_mode=upstream-default-unmapped`.
+This does not claim that the upstream model performs no reasoning.
+
+Resumes without an explicit model preserve the actor's saved model. Never silently
+convert an existing GPT conversation to DeepSeek: OpenAI encrypted compaction is
+not transferable. If migration is requested, Astra must prepare a new bounded
+handoff/task and reconcile outstanding inbox work before retiring the old actor.
+DeepSeek is text-only with a 65,536-token advertised context. Hosted tools and
+remote Responses compaction are unsupported; do not promise GPT feature parity.
+
+For explicitly selected GPT actors, reasoning effort has a floor of **high**. Astra chooses the effort when
 preparing the handoff: `high` for ordinary bounded implementation, `xhigh` for
 complex multi-step work or long plans, and `max` for the hardest reasoning-heavy
 assignments. Pass `--luna-effort high|xhigh|max` to `run-start`. Never select low
 or medium. Plan length is a signal; consider dependencies and ambiguity too.
-The launcher pins `model_reasoning_effort` on both launch and resume. New actors
+The launcher pins `model_reasoning_effort` on both launch and resume. New GPT actors
 default to high; omitting the flag on resume preserves the last saved launch
 effort, including xhigh/max. Normal service speed remains mandatory at all levels.
 

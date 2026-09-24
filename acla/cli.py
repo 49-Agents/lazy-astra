@@ -19,7 +19,7 @@ from .tmux import DEFAULT_SOCKET, alive, metadata, launch, safe_session, stop_ow
 from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = 'gpt-6-luna'
+DEFAULT_MODEL = 'local-model'
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
 LUNA_REPORTING_POLICY = '''Luna communication and decision policy:
 ALLOWED SUBAGENT ROLES: exploration, implementation, and review only.
@@ -33,8 +33,10 @@ reviewing an existing plan/design never authorizes writing a replacement.
 If asked to plan or design, or if a missing decision blocks the assignment, use
 ask-question to request Astra's decision and pause affected work. Do not relabel
 planning as exploration/review or delegate it to another subagent.
-Reasoning effort must remain at least high. Astra selects high, xhigh, or max
-for the assignment; do not lower effort or enable fast/priority service.
+For GPT actors, reasoning effort must remain at least high; Astra selects high,
+xhigh, or max. Local model uses upstream defaults: its current adapter does
+not map Codex reasoning effort, so never claim equivalent high/xhigh/max reasoning.
+Do not enable fast/priority service for any actor.
 Execute the agreed handoff and Astra's explicit review instructions. Do not make
 independent decisions about the plan, scope, requirements, design, tradeoffs, or
 how to resolve ambiguity. When blocked or when any planning input or decision is
@@ -178,19 +180,25 @@ def cmd_run_start(args):
     try:
         with state_lock(store, 'startup'):
             existing = store.existing_luna(run_id, args.luna_name)
-            effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or 'high'
-            if effort not in LUNA_EFFORTS:
-                raise ValueError('Luna reasoning effort must be high, xhigh, or max')
+            model = args.luna_model or (existing['model'] if existing else None) or os.environ.get('ACLA_LUNA_MODEL') or DEFAULT_MODEL
+            if model == 'local-model':
+                if args.luna_effort is not None:
+                    raise ValueError('Local model does not support --luna-effort; omit it to use upstream defaults')
+                effort = 'none'  # Catalog value; not a claim that upstream reasoning is disabled.
+            else:
+                effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or 'high'
+                if effort not in LUNA_EFFORTS:
+                    raise ValueError('GPT actor reasoning effort must be high, xhigh, or max')
             luna_id = existing['id'] if existing else new_id()
             session = existing['tmux_session'] if existing else safe_session(
                 f'{args.luna_name[:60]}-{run_id}-{luna_id}')
-            command = shlex.join(['codex', '--model', args.luna_model])
+            command = shlex.join(['codex', '--model', model])
             result = store.start_run(goal=args.goal, run_id=run_id, astra_id=None,
                 astra_name='Astra Critic', astra_workspace=str(Path.cwd()), astra_session=None,
                 astra_socket=None, astra_command='codex', astra_thread_id=astra_thread, codex_home=home,
                 luna_name=args.luna_name, luna_id=luna_id, luna_workspace=workspace,
                 luna_session=session, luna_socket=DEFAULT_SOCKET, luna_command=command,
-                luna_model=args.luna_model, handoff=handoff)
+                luna_model=model, handoff=handoff)
             luna = store.agent(result['luna_id'])
             approved = store.db.execute('SELECT approved FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['approved']
             pending = store.db.execute("""SELECT COUNT(*) FROM messages m JOIN threads t ON t.id=m.thread_id
@@ -229,6 +237,8 @@ def cmd_run_start(args):
             watcher = start_watcher(store, args.interval)
             output({**result, 'tmux_session': session, 'tmux_socket': luna['tmux_socket'],
                     'luna_model': luna['model'], 'launched': created,
+                    'reasoning_effort_supported': model != 'local-model',
+                    'reasoning_mode': 'upstream-default-unmapped' if model == 'local-model' else 'codex-effort',
                     'requested_luna_effort': effort,
                     'luna_launch_effort': effort if created else luna['reasoning_effort'],
                     'effort_restart_required': not created and luna['reasoning_effort'] != effort,
@@ -447,7 +457,7 @@ def cmd_stop_actor(args):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog='acla', description='Standalone Astra critic / GPT-6 Luna actor workflow')
+    p = argparse.ArgumentParser(prog='acla', description='Standalone Astra critic / Local model actor workflow')
     p.add_argument('--state', help='Private SQLite path')
     sub = p.add_subparsers(dest='command', required=True)
     def command(name, handler):
@@ -459,9 +469,9 @@ def build_parser():
     for name in ('run-id', 'goal', 'workspace', 'luna-name', 'handoff-file'):
         start.add_argument('--' + name, required=True)
     start.add_argument('--astra-thread')
-    start.add_argument('--luna-model', default=os.environ.get('ACLA_LUNA_MODEL', DEFAULT_MODEL))
+    start.add_argument('--luna-model', help='Actor model; new actors default to local-model, resumes preserve the saved model')
     start.add_argument('--luna-effort', choices=LUNA_EFFORTS,
-                       help='Reasoning effort: high by default; reuse saved effort on resume')
+                       help='GPT actors only: high by default; unavailable for Local model')
     start.add_argument('--interval', type=int, default=300)
     start.add_argument('--workspace-trust', choices=('trusted', 'configured'), default='trusted',
                        help='Trust the selected actor workspace for this launch (default), '

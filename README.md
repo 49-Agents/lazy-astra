@@ -1,6 +1,6 @@
 # Astra Critic Luna Actor
 
-A standalone Codex plugin for an Astra critic and GPT-6 Luna actors. Invoke the
+A standalone Codex plugin for an Astra critic and Local model actors. Invoke the
 single skill by saying **run the astra critic luna actor** after discussing your
 issue with Astra. Astra prepares the handoff, launches actors in tmux, reviews
 reports, and sends corrections until it approves the work.
@@ -22,14 +22,29 @@ credentials are needed. There is no terminal-paste delivery.
 
 - Python 3.10+, tmux, and an authenticated Codex CLI with `codex queue` support
   (developed against CLI 0.155.1).
-- `gpt-6-luna` access, or an explicitly selected `--luna-model`.
+- Codex configured with the Local provider router and `local-model` model catalog,
+  or an explicitly selected alternative `--luna-model`.
 - Astra and actors must be reachable by the same host's Codex queue facility.
   This version is not a cross-machine inbox service.
+
+New actors default to `local-model` through the existing Codex router.
+Astra remains the critic; tmux, inbox, full access and review behavior stay the same.
+The historical Luna CLI names remain. Explicit `--luna-model` or ACLA_LUNA_MODEL
+for new actors can override the default. There is no silent model fallback.
+Existing actors retain their saved model on resume; changing the default does not
+migrate live GPT conversations or transfer encrypted compacted history.
+
+DeepSeek uses upstream reasoning defaults. Its current router does not map Codex
+reasoning effort: omit `--luna-effort` (explicit levels are rejected). The launcher
+pins the catalog value `none` and reports `reasoning_effort_supported=false` with
+`reasoning_mode=upstream-default-unmapped`; this is not a claim about the model's
+internal reasoning. Text only, advertised 65,536-token context; hosted tools and
+remote Responses compaction are not supported by the current adapter.
 
 Every actor launch and resume explicitly uses `service_tier="default"` (normal
 speed, not fast/priority), overriding inherited speed preferences.
 
-Reasoning effort defaults to **high**, pinned with `model_reasoning_effort` on
+For explicitly selected GPT actors, reasoning effort defaults to **high**, pinned with `model_reasoning_effort` on
 launch and resume. Astra may choose `run-start --luna-effort xhigh` for complex
 work/long plans, or `--luna-effort max` for the hardest assignments. Only high,
 xhigh and max are accepted. Omitting the flag preserves an actor's saved effort

@@ -69,14 +69,14 @@ class CliWorkflowTests(unittest.TestCase):
     def store(self):
         return Store(self.state)
 
-    def test_run_start_uses_native_astra_identity_and_launches_default_luna6_with_handoff(self):
+    def test_run_start_uses_native_astra_identity_and_launches_default_deepseek_with_handoff(self):
         result = self.start_actor()
-        self.assertEqual(result["luna_model"], "gpt-6-luna")
+        self.assertEqual(result["luna_model"], "local-model")
         self.assertEqual(result["state"], "awaiting_actor_binding")
         self.assertEqual(result["watcher"]["session"], "watcher-test")
         self.assertEqual(self.mock_launch.call_args.kwargs["role"], "luna")
         argv = self.mock_launch.call_args.args[2]
-        self.assertEqual(argv[:4], ["codex", "--model", "gpt-6-luna", "--cd"])
+        self.assertEqual(argv[:4], ["codex", "--model", "local-model", "--cd"])
         self.assertIn("--sandbox", argv)
         self.assertIn("danger-full-access", argv)
         self.assertIn("--ask-for-approval", argv)
@@ -90,7 +90,7 @@ class CliWorkflowTests(unittest.TestCase):
         store = self.store()
         try:
             self.assertEqual(store.agent(result["astra_id"])["codex_thread_id"], self.astra_thread)
-            self.assertEqual(store.agent(result["luna_id"])["model"], "gpt-6-luna")
+            self.assertEqual(store.agent(result["luna_id"])["model"], "local-model")
         finally:
             store.close()
 
@@ -108,6 +108,33 @@ class CliWorkflowTests(unittest.TestCase):
         self.assertIn("--model", argv)
         self.assertIn("--cd", argv)
         self.assertFalse(any("bind-session" in arg or "Implement the parser" in arg for arg in argv))
+
+    def test_deepseek_capabilities_and_effort_rejection(self):
+        actor = self.start_actor()
+        self.assertFalse(actor['reasoning_effort_supported'])
+        self.assertEqual(actor['reasoning_mode'], 'upstream-default-unmapped')
+        self.assertEqual(actor['luna_launch_effort'], 'none')
+        self.assertIn('model_reasoning_effort="none"', self.mock_launch.call_args.args[2])
+        count = self.mock_launch.call_count
+        self.invoke_fails('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                          '--workspace', self.workspace_one, '--luna-name', 'parser',
+                          '--handoff-file', self.handoff, '--luna-effort', 'high',
+                          contains='does not support --luna-effort')
+        self.assertEqual(self.mock_launch.call_count, count)
+
+    def test_gpt_resume_preserves_saved_model_and_effort_after_default_change(self):
+        actor = self.invoke('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                            '--workspace', self.workspace_one, '--luna-name', 'parser',
+                            '--handoff-file', self.handoff, '--luna-model', 'gpt-6-luna',
+                            '--luna-effort', 'xhigh')
+        self.assertTrue(actor['reasoning_effort_supported'])
+        with mock.patch.dict(os.environ, {'CODEX_THREAD_ID': self.luna_one_thread}):
+            self.invoke('bind-session', '--luna-id', actor['luna_id'])
+        with mock.patch.dict(os.environ, {'ACLA_LUNA_MODEL': 'local-model'}):
+            resumed = self.start_actor()
+        self.assertEqual(resumed['luna_model'], 'gpt-6-luna')
+        self.assertEqual(resumed['luna_launch_effort'], 'xhigh')
+        self.assertIn('model_reasoning_effort="xhigh"', self.mock_launch.call_args.args[2])
 
     def test_bind_session_reads_actor_native_thread_id(self):
         result = self.start_actor()
