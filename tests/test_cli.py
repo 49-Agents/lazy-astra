@@ -69,6 +69,57 @@ class CliWorkflowTests(unittest.TestCase):
     def store(self):
         return Store(self.state)
 
+    def test_claude_defaults_and_identity_are_retained(self):
+        args = ('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                '--workspace', str(self.workspace_one), '--luna-name', 'claude',
+                '--handoff-file', str(self.handoff))
+        with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x.rsplit('/', 1)[-1]):
+            result = self.invoke(*args, '--executor-backend', 'claude-code')
+            self.assertEqual(result['luna_model'], 'claude-opus-5-5')
+            self.assertEqual(result['luna_launch_effort'], 'medium')
+            self.assertIn('_claude-run', self.mock_launch.call_args.args[2])
+            resumed = self.invoke(*args)
+            self.assertEqual(resumed['claude_session_id'], result['claude_session_id'])
+            self.assertEqual(resumed['executor_backend'], 'claude-code')
+            self.invoke_fails(*args, '--executor-backend', 'codex', contains='Backend changes')
+
+    def test_claude_runner_initial_and_resume_turns(self):
+        from acla.claude_runner import run
+        import argparse
+        with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x):
+            actor = self.invoke('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                                '--workspace', self.workspace_one, '--luna-name', 'claude',
+                                '--handoff-file', self.handoff, '--executor-backend', 'claude-code')
+        store = self.store()
+        store.db.execute('UPDATE pairs SET approved=1 WHERE luna_id=?', (actor['luna_id'],))
+        store.db.commit()
+        store.close()
+        for flag in ('--session-id', '--resume'):
+            process = mock.Mock()
+            process.stdout = io.StringIO(json.dumps({'type':'system', 'subtype':'init',
+                'session_id':actor['claude_session_id'], 'permissionMode':'bypassPermissions'}) + '\n' +
+                json.dumps({'type':'result', 'is_error':False}) + '\n')
+            process.wait.return_value = 0
+            with mock.patch('acla.claude_runner.subprocess.Popen', return_value=process) as popen, contextlib.redirect_stdout(io.StringIO()):
+                run(argparse.Namespace(state=str(self.state), luna_id=actor['luna_id']))
+            argv = popen.call_args.args[0]
+            self.assertIn(flag, argv)
+            self.assertEqual(argv[argv.index('--effort') + 1], 'medium')
+            self.assertEqual(popen.call_args.kwargs['env']['CLAUDE_CODE_DISABLE_FAST_MODE'], '1')
+            self.assertNotIn('CODEX_THREAD_ID', popen.call_args.kwargs['env'])
+        store = self.store()
+        self.assertEqual(store.agent(actor['luna_id'])['claude_initialized'], 1)
+        with mock.patch.dict(os.environ, {'ACLA_LUNA_ID':actor['luna_id'],
+                'ACLA_CLAUDE_SESSION_ID':actor['claude_session_id']}):
+            self.assertEqual(cli.bound_recipient(store)['id'], actor['luna_id'])
+        store.close()
+
+    def test_codex_gpt_still_rejects_medium(self):
+        self.invoke_fails('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                         '--workspace', self.workspace_one, '--luna-name', 'gpt',
+                         '--handoff-file', self.handoff, '--luna-model', 'gpt-6-luna',
+                         '--luna-effort', 'medium', contains='high, xhigh, or max')
+
     def test_run_start_uses_native_astra_identity_and_launches_default_deepseek_with_handoff(self):
         result = self.start_actor()
         self.assertEqual(result["luna_model"], "local-model")

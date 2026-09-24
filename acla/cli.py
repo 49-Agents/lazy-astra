@@ -20,6 +20,7 @@ from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL = 'local-model'
+DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5'
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
 LUNA_REPORTING_POLICY = '''Luna communication and decision policy:
 ALLOWED SUBAGENT ROLES: exploration, implementation, and review only.
@@ -33,6 +34,7 @@ reviewing an existing plan/design never authorizes writing a replacement.
 If asked to plan or design, or if a missing decision blocks the assignment, use
 ask-question to request Astra's decision and pause affected work. Do not relabel
 planning as exploration/review or delegate it to another subagent.
+Claude Code defaults to Opus 5.5 with medium effort. Preserve the configured effort.
 For GPT actors, reasoning effort must remain at least high; Astra selects high,
 xhigh, or max. Local model uses upstream defaults: its current adapter does
 not map Codex reasoning effort, so never claim equivalent high/xhigh/max reasoning.
@@ -269,14 +271,15 @@ def cmd_run_start(args):
                 raise ValueError('Claude noninteractive actors require --workspace-trust trusted')
             if existing and existing['executor_backend'] != backend:
                 raise ValueError('Backend changes require a new actor')
-            model = args.luna_model or (existing['model'] if existing else None) or os.environ.get('ACLA_LUNA_MODEL') or DEFAULT_MODEL
+            model = args.luna_model or (existing['model'] if existing else None) or os.environ.get('ACLA_LUNA_MODEL') or (DEFAULT_CLAUDE_MODEL if backend == 'claude-code' else DEFAULT_MODEL)
             if model == 'local-model':
                 if args.luna_effort is not None:
                     raise ValueError('Local model does not support --luna-effort; omit it to use upstream defaults')
                 effort = 'none'  # Catalog value; not a claim that upstream reasoning is disabled.
             else:
-                effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or 'high'
-                if effort not in LUNA_EFFORTS:
+                effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or ('medium' if backend == 'claude-code' else 'high')
+                allowed_efforts = ('medium', *LUNA_EFFORTS) if backend == 'claude-code' else LUNA_EFFORTS
+                if effort not in allowed_efforts:
                     raise ValueError('Actor reasoning effort must be high, xhigh, or max')
             luna_id = existing['id'] if existing else new_id()
             session = existing['tmux_session'] if existing else safe_session(
@@ -599,9 +602,9 @@ def build_parser():
     start.add_argument('--astra-thread')
     start.add_argument('--executor-backend', choices=('codex', 'claude-code'), help='New actors default to codex; resumes retain their backend')
     start.add_argument('--claude-command', help='Claude executable path (default: claude-deepseek for DeepSeek, otherwise claude)')
-    start.add_argument('--luna-model', help='Actor model; new actors default to local-model, resumes preserve the saved model')
-    start.add_argument('--luna-effort', choices=LUNA_EFFORTS,
-                       help='high by default for supported models; unavailable for Local model')
+    start.add_argument('--luna-model', help='Codex defaults to local-model; Claude Code to claude-opus-5-5; resumes preserve the saved model')
+    start.add_argument('--luna-effort', choices=('medium', *LUNA_EFFORTS),
+                       help='Claude defaults medium; GPT requires high/xhigh/max; unavailable for DeepSeek')
     start.add_argument('--interval', type=int, default=300)
     start.add_argument('--reviewLoop', '--review-loop', dest='review_loop', type=boolean,
                        help='true/false: native plan-conformance review gate (new actors default true)')

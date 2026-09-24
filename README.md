@@ -30,7 +30,7 @@ credentials are needed. There is no terminal-paste delivery.
   the configured `claude-deepseek` gateway launcher for DeepSeek.
   This version is not a cross-machine inbox service.
 
-New actors default to `local-model` through the existing Codex router.
+New Codex actors default to `local-model` through the existing Codex router.
 Astra remains the critic; tmux, inbox, full access and review behavior stay the same.
 The historical Luna CLI names remain. Explicit `--luna-model` or ACLA_LUNA_MODEL
 for new actors can override the default. There is no silent model fallback.
@@ -75,12 +75,16 @@ other actions outside the assigned task.
 
 ## Executor backend
 
+New Claude Code actors default to `claude-opus-5-5` with medium effort.
+Codex retains DeepSeek. Explicit model/effort flags override these defaults;
+resumes preserve saved settings. Opus 5.5 requires Claude Code 2.1.280 or newer.
+
 Choose the CLI independently of the model:
 
 ```bash
 # Add to run-start; the remaining required arguments stay the same:
 --executor-backend codex       # default
---executor-backend claude-code # defaults to DeepSeek via claude-deepseek
+--executor-backend claude-code # defaults to Opus 5.5, medium effort
 # Native Claude instead, with existing authentication:
 --executor-backend claude-code --luna-model sonnet
 ```
@@ -101,7 +105,7 @@ and inherits the configured provider authentication. Native reviewers use Claude
 Agent tool and inherit the executor model. `reviewLoop=true`, `n_reviewers=3`, the
 identical plan input and read/comment-only assignment remain unchanged. The gate
 is an instruction policy, not proof that the reviews occurred. DeepSeek effort
-remains unmapped; native Claude accepts the selected high/xhigh/max effort subject
+remains unmapped; native Claude defaults to medium and accepts medium/high/xhigh/max effort subject
 to its model support. No provider/model fallback is performed.
 
 Claude requires the default `--workspace-trust trusted`; noninteractive Claude

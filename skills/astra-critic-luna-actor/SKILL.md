@@ -90,11 +90,13 @@ If that environment variable is absent, use a known exact task UUID through
 ### Choose the executor backend
 
 `--executor-backend codex|claude-code` selects the CLI harness independently of
-`--luna-model`. New actors default to Codex and Local model. Saved backend,
+`--luna-model`. New Codex actors default to Local model. New Claude Code actors default to
+`claude-opus-5-5` with `--luna-effort medium`. Saved backend,
 model, executable and native session identity are retained on resume; switching
 backends requires a new actor and a reconciled handoff, never conversion in place.
 
-For Claude Code, add `--executor-backend claude-code`. DeepSeek uses the installed
+For Claude Code, add `--executor-backend claude-code` (Opus 5.5, medium effort).
+Explicit `--luna-model local-model` uses the installed
 `claude-deepseek` executable; `--claude-command /absolute/executable` overrides it.
 A native Claude model can be explicitly selected with `--luna-model sonnet` and
 uses `claude` by default. Never silently fall back to a different model/provider.
@@ -125,7 +127,7 @@ Claude session history stays in the launcher's configured Claude directory.
 
 ### Model speed, permissions, and workspace trust
 
-**Use Local model for new actors by default.** The historical Luna name and
+**Use Local model for new Codex actors; Opus 5.5 medium for new Claude Code actors.** The historical Luna name and
 `--luna-model` flag remain for compatibility. Astra stays the critic. Use the
 selected executor backend (Codex by default). Codex uses its configured Local provider router. This machine routes `local-model` through
 `http://127.0.0.1:18445/v1` to the friend's hosted DeepSeek server. The router and
@@ -204,7 +206,8 @@ When enabled, after implementation and before reporting to Astra, the executor
 creates exactly `n_reviewers` **native subagents of its executor backend**, never tmux/ACLA actors.
 Codex uses its native subagent tools; Claude Code uses its native Agent tool.
 They inherit the executor's model and full-access/never-approval configuration.
-New executors and their reviewers default to Local model. Do not select a
+New Codex executors and their reviewers default to Local model; Claude Code
+executors and their reviewers default to Opus 5.5. Do not select a
 GPT reviewer for a DeepSeek executor. `--reviewLoop false` explicitly opts out.
 Use the default native agent role, not a restricted/custom review role. If native
 delegation or the required permission inheritance is unavailable, ask Astra;
