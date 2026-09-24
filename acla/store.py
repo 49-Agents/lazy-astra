@@ -269,7 +269,7 @@ class Store:
                                    tmux_socket=luna_socket, command=luna_command, agent_id=actual_luna,
                                    codex_home=codex_home, model=luna_model)
                 # Enable for new actors; additive migration preserves older actors' policy.
-                self.db.execute('UPDATE agents SET review_loop=1, executor_backend=?, claude_session_id=? WHERE id=?',
+                self.db.execute('UPDATE agents SET review_loop=1, n_reviewers=1, executor_backend=?, claude_session_id=? WHERE id=?',
                     (executor_backend, new_id() if executor_backend == 'claude-code' else None, actual_luna))
             pair = self.db.execute("SELECT * FROM pairs WHERE luna_id=?", (actual_luna,)).fetchone()
             if pair and (pair["run_id"] != run_id or pair["astra_id"] != actual_astra):

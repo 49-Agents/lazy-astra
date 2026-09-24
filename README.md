@@ -1,6 +1,6 @@
 # Astra Critic Luna Actor
 
-**New actor default: Claude Code, `claude-opus-5-5`, medium effort.**
+**New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one reviewer.**
 Use `--executor-backend codex` to explicitly select Codex (DeepSeek by default).
 Existing actors retain their saved backend, model and effort on resume.
 
@@ -106,7 +106,7 @@ saved actor/session environment, within the existing same-OS-user trust boundary
 
 Every Claude turn sets `bypassPermissions`, disables sandboxing and fast mode,
 and inherits the configured provider authentication. Native reviewers use Claude's
-Agent tool and inherit the executor model. `reviewLoop=true`, `n_reviewers=3`, the
+Agent tool and inherit the executor model. `reviewLoop=true`, `n_reviewers=1`, the
 identical plan input and read/comment-only assignment remain unchanged. The gate
 is an instruction policy, not proof that the reviews occurred. DeepSeek effort
 remains unmapped; native Claude defaults to medium and accepts medium/high/xhigh/max effort subject
@@ -172,9 +172,9 @@ workstream is approved. Nothing is automatically merged or deployed.
 
 ## Optional native review loop
 
-Add `--reviewLoop true --n_reviewers 3` to `run-start` to enable review after
+Add `--reviewLoop true --n_reviewers 1` to `run-start` to enable review after
 implementation and before the executor reports to Astra. Defaults for new actors
-are `reviewLoop=true` and `n_reviewers=3`; both persist per actor and are reported
+are `reviewLoop=true` and `n_reviewers=1`; both persist per actor and are reported
 by status. Omitted options retain saved settings on resume. Changing settings for
 a live actor requires stop/resume; the helper does not silently interrupt it.
 

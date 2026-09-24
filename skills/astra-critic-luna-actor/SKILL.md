@@ -5,7 +5,7 @@ description: "Invoke when the user says 'run the astra critic luna actor' or exp
 
 # Astra Critic Luna Actor
 
-**New actor default: Claude Code, `claude-opus-5-5`, medium effort.**
+**New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one reviewer.**
 Use `--executor-backend codex` to explicitly select Codex (DeepSeek by default).
 Existing actors retain their saved backend, model and effort on resume.
 
@@ -199,9 +199,9 @@ after one restart with the updated launcher, report the exact blocker.
 
 ### Optional executor review loop
 
-`run-start --reviewLoop true --n_reviewers 3` enables the executor's native
+`run-start --reviewLoop true --n_reviewers 1` enables the executor's native
 review loop. `reviewLoop` is a boolean (new-actor default **true**);
-`n_reviewers` is a positive integer (default **3**). Both are saved per actor,
+`n_reviewers` is a positive integer (default **1**). Both are saved per actor,
 shown by run-start/status, and preserved when omitted on resume. The equivalent
 kebab-case flags are `--review-loop` and `--n-reviewers`. Stop/resume the same
 actor before changing these settings for an existing live terminal.

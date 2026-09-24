@@ -610,7 +610,7 @@ def build_parser():
     start.add_argument('--reviewLoop', '--review-loop', dest='review_loop', type=boolean,
                        help='true/false: native plan-conformance review gate (new actors default true)')
     start.add_argument('--n_reviewers', '--n-reviewers', dest='n_reviewers', type=positive_integer,
-                       help='Number of identical independent native reviews (new actors default 3)')
+                       help='Number of identical independent native reviews (new actors default 1)')
     start.add_argument('--workspace-trust', choices=('trusted', 'configured'), default='trusted',
                        help='Trust the selected actor workspace for this launch (default), '
                             'or use existing Codex trust configuration and prompts')

@@ -78,6 +78,8 @@ class CliWorkflowTests(unittest.TestCase):
         self.assertEqual(result['executor_backend'], 'claude-code')
         self.assertEqual(result['luna_model'], 'claude-opus-5-5')
         self.assertEqual(result['luna_launch_effort'], 'medium')
+        self.assertTrue(result['reviewLoop'])
+        self.assertEqual(result['n_reviewers'], 1)
 
     def test_claude_defaults_and_identity_are_retained(self):
         args = ('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
