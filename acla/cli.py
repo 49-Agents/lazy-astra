@@ -166,6 +166,8 @@ and the native reviewers themselves do not trigger this gate.'''
             'native spawn/wait/close subagent tools', 'native Agent tool (wait for every result)').replace(
             'full-access/never\napproval settings', 'bypassPermissions settings').replace(
             'closing completed native agents for slots', 'waiting for completed agents before starting the next batch')
+    reviewer_model = dict(luna).get('reviewer_model') or luna['model']
+    policy = policy.replace('inherit your model and', f'use reviewer model {reviewer_model} and inherit your')
     return policy
 
 
@@ -351,6 +353,7 @@ def cmd_run_start(args):
             output({**result, 'tmux_session': session, 'tmux_socket': luna['tmux_socket'],
                     'luna_model': luna['model'], 'executor_backend': backend, 'claude_session_id': luna['claude_session_id'], 'launched': created,
                     'reviewLoop': bool(luna['review_loop']), 'n_reviewers': luna['n_reviewers'],
+                    'reviewer_model': luna['reviewer_model'] or luna['model'],
                     'reasoning_effort_supported': model != 'local-model',
                     'reasoning_mode': 'upstream-default-unmapped' if model == 'local-model' else ('claude-effort' if backend == 'claude-code' else 'codex-effort'),
                     'requested_luna_effort': effort,

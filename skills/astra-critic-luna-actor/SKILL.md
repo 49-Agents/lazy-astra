@@ -5,13 +5,13 @@ description: "Invoke when the user says 'run the astra critic luna actor' or exp
 
 # Astra Critic Luna Actor
 
-**New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one reviewer.**
+**New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one Sonnet reviewer.**
 Use `--executor-backend codex` to explicitly select Codex (DeepSeek by default).
 Existing actors retain their saved backend, model and effort on resume.
 
 The secret phrase is **run the astra critic luna actor**, ignoring case and hyphens.
 This is a standalone plugin. It needs Python 3.10+, tmux, a signed-in Codex CLI
-with `codex queue`, and the requested model (default `local-model`). No external business platform
+with `codex queue`, and the requested model (default `claude-opus-5-5`). No external business platform
 service, business identity, or API key setup is involved.
 
 Act as the critic in this existing Codex task. Do not start another Astra task.
@@ -116,8 +116,8 @@ flags described below apply only to Codex. Claude requires workspace trust
 
 Claude inbox helpers validate the saved session/actor environment and Codex home,
 within the same-OS-user coordination boundary. They do not require CODEX_THREAD_ID.
-The review gate uses native Claude Code Agent children, inheriting the executor
-model and permissions; identical-input/read-only/500-word rules remain mandatory.
+The review gate uses native Claude Code Agent children, using the saved reviewer
+model and inheriting executor permissions; identical-input/read-only/500-word rules remain mandatory.
 If delegation is unavailable, ask Astra instead of skipping review.
 
 Inspect `status` for `executor_backend`, `claude_session_id`, `claude_initialized`
@@ -209,9 +209,9 @@ actor before changing these settings for an existing live terminal.
 When enabled, after implementation and before reporting to Astra, the executor
 creates exactly `n_reviewers` **native subagents of its executor backend**, never tmux/ACLA actors.
 Codex uses its native subagent tools; Claude Code uses its native Agent tool.
-They inherit the executor's model and full-access/never-approval configuration.
+They use the saved reviewer model and full-access/never-approval configuration.
 New Codex executors and their reviewers default to Local model; Claude Code
-executors and their reviewers default to Opus 5.5. Do not select a
+executors default to Opus 5.5 and their reviewers to Sonnet. Do not select a
 GPT reviewer for a DeepSeek executor. `--reviewLoop false` explicitly opts out.
 Use the default native agent role, not a restricted/custom review role. If native
 delegation or the required permission inheritance is unavailable, ask Astra;
@@ -343,3 +343,14 @@ For an owner-requested stop or controlled restart, `stop-actor --luna-id '<ID>'`
 checks the saved tmux ownership and retains the conversation and messages.
 Actor helper commands `bind-session`, `send-reply`, and `ask-question` bind to
 that actor's saved backend identity; bootstrap gives the actor their exact use.
+
+### Reviewer model default
+
+New native Claude Code actors use one **Sonnet** reviewer (`reviewer_model=sonnet`)
+for one review batch per completed implementation/revision round. Execution stays
+on Opus 5.5 with medium effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and the
+review prompt names the saved reviewer model. All reviewers still receive identical
+plan/worktree input and may only read and comment. `reviewLoop=false` disables it.
+Existing actors keep their saved policy (older rows inherit their executor model).
+Explicit Codex and DeepSeek-gateway actors retain their executor model for reviews;
+the DeepSeek gateway cannot serve Sonnet. Status reports the effective reviewer model.

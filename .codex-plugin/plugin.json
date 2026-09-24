@@ -1,6 +1,6 @@
 {
   "name": "astra-critic-luna-actor",
-  "version": "0.1.0+codex.20260924122250",
+  "version": "0.1.0+codex.20260924163224",
   "description": "Run an Astra critic and Luna actor review loop with a local inbox and tmux sessions.",
   "author": {
     "name": "ACLA contributors"

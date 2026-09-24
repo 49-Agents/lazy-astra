@@ -1,6 +1,6 @@
 # Astra Critic Luna Actor
 
-**New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one reviewer.**
+**New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one Sonnet reviewer.**
 Use `--executor-backend codex` to explicitly select Codex (DeepSeek by default).
 Existing actors retain their saved backend, model and effort on resume.
 
@@ -106,7 +106,7 @@ saved actor/session environment, within the existing same-OS-user trust boundary
 
 Every Claude turn sets `bypassPermissions`, disables sandboxing and fast mode,
 and inherits the configured provider authentication. Native reviewers use Claude's
-Agent tool and inherit the executor model. `reviewLoop=true`, `n_reviewers=1`, the
+Agent tool and use the saved reviewer model. `reviewLoop=true`, `n_reviewers=1`, the
 identical plan input and read/comment-only assignment remain unchanged. The gate
 is an instruction policy, not proof that the reviews occurred. DeepSeek effort
 remains unmapped; native Claude defaults to medium and accepts medium/high/xhigh/max effort subject
@@ -267,3 +267,14 @@ python3 /path/to/plugin-creator/scripts/validate_plugin.py .
 
 See `docs/VERIFICATION.md` for the evidence and remaining runtime limits from the
 latest end-to-end check.
+
+### Reviewer model default
+
+New native Claude Code actors use one **Sonnet** reviewer (`reviewer_model=sonnet`)
+for one review batch per completed implementation/revision round. Execution stays
+on Opus 5.5 with medium effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and the
+review prompt names the saved reviewer model. All reviewers still receive identical
+plan/worktree input and may only read and comment. `reviewLoop=false` disables it.
+Existing actors keep their saved policy (older rows inherit their executor model).
+Explicit Codex and DeepSeek-gateway actors retain their executor model for reviews;
+the DeepSeek gateway cannot serve Sonnet. Status reports the effective reviewer model.

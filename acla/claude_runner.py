@@ -69,9 +69,8 @@ def run(args):
                         '--resume' if luna['claude_initialized'] else '--session-id', luna['claude_session_id'], '-p']
                 if luna['model'] != 'local-model':
                     argv += ['--effort', luna['reasoning_effort'] or 'medium']
-                # Native reviewers inherit the executor model. Explicitly override any
-                # global subagent-model setting, including when using stock Claude.
-                env['CLAUDE_CODE_SUBAGENT_MODEL'] = luna['model']
+                # Use the saved reviewer model; migrated actors retain model inheritance.
+                env['CLAUDE_CODE_SUBAGENT_MODEL'] = luna['reviewer_model'] or luna['model']
                 env['CLAUDE_CODE_DISABLE_FAST_MODE'] = '1'
                 store.db.execute('UPDATE agents SET runtime_error=NULL WHERE id=?', (luna['id'],))
                 store.db.commit()

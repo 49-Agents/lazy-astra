@@ -86,6 +86,7 @@ class Store:
         self._ensure_column("agents", "claude_session_id", "TEXT")
         self._ensure_column("agents", "claude_initialized", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("agents", "runtime_error", "TEXT")
+        self._ensure_column("agents", "reviewer_model", "TEXT")
         self._ensure_column("pairs", "handoff", "TEXT")
         self._ensure_column("pairs", "approved", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("messages", "delivery_claim", "TEXT")
@@ -269,8 +270,9 @@ class Store:
                                    tmux_socket=luna_socket, command=luna_command, agent_id=actual_luna,
                                    codex_home=codex_home, model=luna_model)
                 # Enable for new actors; additive migration preserves older actors' policy.
-                self.db.execute('UPDATE agents SET review_loop=1, n_reviewers=1, executor_backend=?, claude_session_id=? WHERE id=?',
-                    (executor_backend, new_id() if executor_backend == 'claude-code' else None, actual_luna))
+                self.db.execute('UPDATE agents SET review_loop=1, n_reviewers=1, reviewer_model=?, executor_backend=?, claude_session_id=? WHERE id=?',
+                    ('sonnet' if executor_backend == 'claude-code' and luna_model != 'local-model' else luna_model,
+                     executor_backend, new_id() if executor_backend == 'claude-code' else None, actual_luna))
             pair = self.db.execute("SELECT * FROM pairs WHERE luna_id=?", (actual_luna,)).fetchone()
             if pair and (pair["run_id"] != run_id or pair["astra_id"] != actual_astra):
                 raise ValueError("Luna is already bound to another Astra/run")
@@ -617,6 +619,7 @@ class Store:
             l.executor_backend, l.claude_session_id, l.claude_initialized, l.runtime_error,
             l.reasoning_effort AS luna_launch_effort, t.id AS thread_id,
             l.review_loop AS reviewLoop, l.n_reviewers AS n_reviewers,
+            COALESCE(l.reviewer_model, l.model) AS reviewer_model,
             CASE WHEN l.model='local-model' THEN 0 ELSE 1 END AS reasoning_effort_supported,
             CASE WHEN l.model='local-model' THEN 'upstream-default-unmapped' WHEN l.executor_backend='claude-code' THEN 'claude-effort' ELSE 'codex-effort' END AS reasoning_mode,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND (m.legacy=0 OR m.delivered_at IS NULL)) AS pending_messages,
