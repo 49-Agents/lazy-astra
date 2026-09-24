@@ -1,6 +1,6 @@
 ---
 name: astra-critic-luna-actor
-description: "Invoke when the user says 'run the astra critic luna actor' or explicitly requests the Astra–Luna review workflow. Keep Astra in the current Codex app or CLI task; launch Local model actors in tmux, exchange full inbox messages, and review until approved."
+description: "Invoke when the user says 'run the astra critic luna actor' or explicitly requests the Astra–Luna review workflow. Keep Astra in the current Codex app or CLI task; launch Codex or Claude Code actors in tmux, exchange full inbox messages, and review until approved."
 ---
 
 # Astra Critic Luna Actor
@@ -87,12 +87,47 @@ If that environment variable is absent, use a known exact task UUID through
    alternative. `--interval` changes the shared state store's polling interval;
    the default is five minutes. Empty polls do not invoke a model.
 
+### Choose the executor backend
+
+`--executor-backend codex|claude-code` selects the CLI harness independently of
+`--luna-model`. New actors default to Codex and Local model. Saved backend,
+model, executable and native session identity are retained on resume; switching
+backends requires a new actor and a reconciled handoff, never conversion in place.
+
+For Claude Code, add `--executor-backend claude-code`. DeepSeek uses the installed
+`claude-deepseek` executable; `--claude-command /absolute/executable` overrides it.
+A native Claude model can be explicitly selected with `--luna-model sonnet` and
+uses `claude` by default. Never silently fall back to a different model/provider.
+Claude authentication/gateway setup must already work.
+
+Claude actors run serial noninteractive turns in a persistent tmux runner,
+resuming an exact saved Claude session. Their own inbox is polled locally every
+2 seconds while idle; this does not invoke a model when empty. Astra notifications
+still use the shared Codex watcher interval. Claude actors use `bypassPermissions`,
+sandbox disabled and fast mode disabled on every turn. The Codex-specific launch
+flags described below apply only to Codex. Claude requires workspace trust
+`trusted`; `configured` is rejected because this runner cannot present a trust UI.
+
+Claude inbox helpers validate the saved session/actor environment and Codex home,
+within the same-OS-user coordination boundary. They do not require CODEX_THREAD_ID.
+The review gate uses native Claude Code Agent children, inheriting the executor
+model and permissions; identical-input/read-only/500-word rules remain mandatory.
+If delegation is unavailable, ask Astra instead of skipping review.
+
+Inspect `status` for `executor_backend`, `claude_session_id`, `claude_initialized`
+and `runtime_error`. A reserved session ID is not proof of a ready actor.
+Watch stream output with `tmux -L acla attach -t '<returned session>'`.
+Failed Claude turns stop the runner. Stream logs survive under
+`<state directory>/claude-runtime/<actor UUID>.jsonl` (private files). Inspect its terminal/native transcript and
+outstanding claims before repeating run-start; do not blindly replay a plan.
+A resume pulls outstanding inbox work without reissuing the initial handoff.
+Claude session history stays in the launcher's configured Claude directory.
+
 ### Model speed, permissions, and workspace trust
 
 **Use Local model for new actors by default.** The historical Luna name and
 `--luna-model` flag remain for compatibility. Astra stays the critic. Use the
-existing Codex CLI and configured Local provider router; do not switch to the separate
-Claude Code worker launcher. This machine routes `local-model` through
+selected executor backend (Codex by default). Codex uses its configured Local provider router. This machine routes `local-model` through
 `http://127.0.0.1:18445/v1` to the friend's hosted DeepSeek server. The router and
 model catalog must already be configured in the actor's CODEX_HOME. An explicit
 `--luna-model` (or ACLA_LUNA_MODEL for new actors) is an intentional override;
@@ -166,7 +201,8 @@ kebab-case flags are `--review-loop` and `--n-reviewers`. Stop/resume the same
 actor before changing these settings for an existing live terminal.
 
 When enabled, after implementation and before reporting to Astra, the executor
-creates exactly `n_reviewers` **native Codex subagents**, never tmux/ACLA actors.
+creates exactly `n_reviewers` **native subagents of its executor backend**, never tmux/ACLA actors.
+Codex uses its native subagent tools; Claude Code uses its native Agent tool.
 They inherit the executor's model and full-access/never-approval configuration.
 New executors and their reviewers default to Local model. Do not select a
 GPT reviewer for a DeepSeek executor. `--reviewLoop false` explicitly opts out.
@@ -272,7 +308,7 @@ python3 /absolute/plugin/acla_cli.py status --run-id '<saved UUID>'
 python3 /absolute/plugin/acla_cli.py messages --thread-id '<review-thread UUID>'
 ```
 
-Repeat the **same** run-start command to reuse an actor or resume its saved Codex
+Repeat the **same** run-start command to reuse an actor or resume its saved executor
 conversation after its tmux process exits. Existing actors keep their complete
 conversation; a fresh unbound actor receives the full bootstrap/handoff. Never
 use `resume --last`, switch a recipient ID, or create a replacement run merely
@@ -299,4 +335,4 @@ uncertain message deliveries remain quarantined until `resolve-delivery --retry`
 For an owner-requested stop or controlled restart, `stop-actor --luna-id '<ID>'`
 checks the saved tmux ownership and retains the conversation and messages.
 Actor helper commands `bind-session`, `send-reply`, and `ask-question` bind to
-that actor's native Codex thread; bootstrap gives the actor their exact use.
+that actor's saved backend identity; bootstrap gives the actor their exact use.

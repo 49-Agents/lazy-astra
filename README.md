@@ -14,8 +14,9 @@ go back to Astra through `ask-question`. This applies to nested subagents too;
 renaming planning as exploration or review does not authorize it.
 
 Astra stays in the current Codex app or CLI task. Actors use tmux on the same
-host. Full messages travel through `codex queue` to exact Codex task UUIDs in both
-directions, with sender, run, review-thread, and message IDs. No external business platform service or
+host. Full messages live in SQLite with sender, run, review-thread and message IDs.
+Codex recipients receive coalesced `codex queue` wakeups; Claude recipients use
+a local serial runner to pull the same inbox. No external business platform service or
 credentials are needed. There is no terminal-paste delivery.
 
 ## Requirements
@@ -24,7 +25,9 @@ credentials are needed. There is no terminal-paste delivery.
   (developed against CLI 0.155.1).
 - Codex configured with the Local provider router and `local-model` model catalog,
   or an explicitly selected alternative `--luna-model`.
-- Astra and actors must be reachable by the same host's Codex queue facility.
+- Astra and Codex actors must be reachable by the same host's Codex queue facility.
+- Claude Code actors additionally require an authenticated `claude` executable, or
+  the configured `claude-deepseek` gateway launcher for DeepSeek.
   This version is not a cross-machine inbox service.
 
 New actors default to `local-model` through the existing Codex router.
@@ -41,7 +44,7 @@ pins the catalog value `none` and reports `reasoning_effort_supported=false` wit
 internal reasoning. Text only, advertised 65,536-token context; hosted tools and
 remote Responses compaction are not supported by the current adapter.
 
-Every actor launch and resume explicitly uses `service_tier="default"` (normal
+Every Codex actor launch and resume explicitly uses `service_tier="default"` (normal
 speed, not fast/priority), overriding inherited speed preferences.
 
 For explicitly selected GPT actors, reasoning effort defaults to **high**, pinned with `model_reasoning_effort` on
@@ -54,7 +57,7 @@ Already-running terminals require controlled stop/resume to adopt a change:
 The returned/status `luna_launch_effort` records the last launch setting, not
 the observed effort of subsequent turns. Confirm actual effort in telemetry.
 
-Every actor launch and resume uses `danger-full-access` with approval policy
+Every Codex actor launch and resume uses `danger-full-access` with approval policy
 `never`, as required by the owner. This gives Luna filesystem and network access
 without command approval prompts, including access to shared Git metadata.
 Actor launches disable the interactive CLI update check so unattended startup
@@ -69,6 +72,51 @@ configuration or trust other directories for unrelated Codex sessions. Use
 interactive prompts instead. Login and hook trust remain separate and can
 require owner attention. Full access does not authorize merges, deployments, or
 other actions outside the assigned task.
+
+## Executor backend
+
+Choose the CLI independently of the model:
+
+```bash
+# Add to run-start; the remaining required arguments stay the same:
+--executor-backend codex       # default
+--executor-backend claude-code # defaults to DeepSeek via claude-deepseek
+# Native Claude instead, with existing authentication:
+--executor-backend claude-code --luna-model sonnet
+```
+
+`--claude-command /absolute/executable` overrides the Claude launcher (a single
+executable, not a shell command). Backend, executable, model and session are saved;
+resumes retain them. Existing actors stay Codex. Backend changes require a new
+actor, with outstanding work reconciled by Astra.
+
+Claude turns run serially inside tmux using `claude -p --session-id UUID`, then
+`--resume UUID`. The runner polls SQLite every two seconds when idle, without
+model calls for empty polls. Astra receives replies through the existing shared
+watcher. Both use the same claim/ack/reply-to semantics. Claude helpers bind to the
+saved actor/session environment, within the existing same-OS-user trust boundary.
+
+Every Claude turn sets `bypassPermissions`, disables sandboxing and fast mode,
+and inherits the configured provider authentication. Native reviewers use Claude's
+Agent tool and inherit the executor model. `reviewLoop=true`, `n_reviewers=3`, the
+identical plan input and read/comment-only assignment remain unchanged. The gate
+is an instruction policy, not proof that the reviews occurred. DeepSeek effort
+remains unmapped; native Claude accepts the selected high/xhigh/max effort subject
+to its model support. No provider/model fallback is performed.
+
+Claude requires the default `--workspace-trust trusted`; noninteractive Claude
+loads the selected workspace's configuration and cannot offer trust prompts.
+Managed policy still applies. The runner stops on failed turns/permission denials;
+`status` exposes `runtime_error`, `claude_initialized` and `claude_session_id`.
+Inspect tmux output and the native transcript before explicitly resuming. Resumes
+request outstanding inbox work, without reissuing a completed initial handoff.
+The private `<state directory>/claude-runtime/<actor UUID>.jsonl` log retains
+stdout/stderr even if the tmux pane exits. History remains in Claude's configured directory (the DeepSeek wrapper has its own).
+Use the returned `tmux_session` with `tmux -L acla attach -t SESSION` to watch JSON
+stream output; this pane is a runner, not an interactive Claude prompt.
+
+CLI details: [Claude headless mode](https://code.claude.com/docs/en/headless),
+[fast-mode controls](https://code.claude.com/docs/en/fast-mode).
 
 ## CLI example
 
@@ -122,7 +170,7 @@ are `reviewLoop=true` and `n_reviewers=3`; both persist per actor and are report
 by status. Omitted options retain saved settings on resume. Changing settings for
 a live actor requires stop/resume; the helper does not silently interrupt it.
 
-The executor creates exactly that many native Codex subagents, inheriting its
+The executor creates exactly that many native subagents of its selected backend, inheriting its
 model and full-access settings. New executors default to `local-model`, so
 their native reviewers use DeepSeek too. Use `--reviewLoop false` to opt out. Every reviewer gets the same complete current
 Astra plan and worktree, with no conversation fork or specialized review areas.

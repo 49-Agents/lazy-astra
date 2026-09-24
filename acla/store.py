@@ -82,6 +82,10 @@ class Store:
         self._ensure_column("agents", "reasoning_effort", "TEXT")
         self._ensure_column("agents", "review_loop", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("agents", "n_reviewers", "INTEGER NOT NULL DEFAULT 3")
+        self._ensure_column("agents", "executor_backend", "TEXT NOT NULL DEFAULT 'codex'")
+        self._ensure_column("agents", "claude_session_id", "TEXT")
+        self._ensure_column("agents", "claude_initialized", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("agents", "runtime_error", "TEXT")
         self._ensure_column("pairs", "handoff", "TEXT")
         self._ensure_column("pairs", "approved", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("messages", "delivery_claim", "TEXT")
@@ -193,8 +197,10 @@ class Store:
                   luna_session: str, luna_socket: str, luna_command: str | None,
                   astra_thread_id: str | None = None, codex_home: str | None = None,
                   luna_model: str | None = None, handoff: str | None = None,
-                  review_loop: bool | None = None, n_reviewers: int | None = None) -> dict:
+                  review_loop: bool | None = None, n_reviewers: int | None = None, executor_backend: str = "codex") -> dict:
         """Atomically create or reuse the complete run identity."""
+        if executor_backend not in ('codex', 'claude-code'):
+            raise ValueError('Unsupported executor backend')
         if review_loop is not None and type(review_loop) is not bool:
             raise ValueError('reviewLoop must be a boolean')
         if n_reviewers is not None and (type(n_reviewers) is not int or n_reviewers < 1):
@@ -242,6 +248,8 @@ class Store:
             if run["state"] == "approved" and not existing:
                 raise ValueError("approved run cannot accept additional actors")
             if existing:
+                if existing['executor_backend'] != executor_backend:
+                    raise ValueError('Cannot change backend of an existing actor; create a new actor')
                 actual_luna = existing["id"]
                 if luna_id and luna_id != actual_luna:
                     raise ValueError("run stream name and Luna ID refer to different actors")
@@ -261,7 +269,8 @@ class Store:
                                    tmux_socket=luna_socket, command=luna_command, agent_id=actual_luna,
                                    codex_home=codex_home, model=luna_model)
                 # Enable for new actors; additive migration preserves older actors' policy.
-                self.db.execute('UPDATE agents SET review_loop=1 WHERE id=?', (actual_luna,))
+                self.db.execute('UPDATE agents SET review_loop=1, executor_backend=?, claude_session_id=? WHERE id=?',
+                    (executor_backend, new_id() if executor_backend == 'claude-code' else None, actual_luna))
             pair = self.db.execute("SELECT * FROM pairs WHERE luna_id=?", (actual_luna,)).fetchone()
             if pair and (pair["run_id"] != run_id or pair["astra_id"] != actual_astra):
                 raise ValueError("Luna is already bound to another Astra/run")
@@ -605,10 +614,11 @@ class Store:
             a.codex_thread_id AS astra_codex_thread_id, a.codex_home AS astra_codex_home,
             l.name AS luna_name, l.tmux_session AS luna_session, l.codex_thread_id AS luna_codex_thread_id,
             l.codex_home AS luna_codex_home, l.model AS luna_model,
+            l.executor_backend, l.claude_session_id, l.claude_initialized, l.runtime_error,
             l.reasoning_effort AS luna_launch_effort, t.id AS thread_id,
             l.review_loop AS reviewLoop, l.n_reviewers AS n_reviewers,
             CASE WHEN l.model='local-model' THEN 0 ELSE 1 END AS reasoning_effort_supported,
-            CASE WHEN l.model='local-model' THEN 'upstream-default-unmapped' ELSE 'codex-effort' END AS reasoning_mode,
+            CASE WHEN l.model='local-model' THEN 'upstream-default-unmapped' WHEN l.executor_backend='claude-code' THEN 'claude-effort' ELSE 'codex-effort' END AS reasoning_mode,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND (m.legacy=0 OR m.delivered_at IS NULL)) AS pending_messages,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND m.legacy=0 AND m.inbox_token IS NULL) AS pending_available_messages,
             (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id AND m.handled_at IS NULL AND m.inbox_token IS NOT NULL) AS pending_claimed_messages,

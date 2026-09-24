@@ -106,7 +106,7 @@ def helper(store):
 def review_loop_policy(luna):
     if not luna['review_loop']:
         return 'reviewLoop=false: no automatic native reviewer batch is required.'
-    return f'''reviewLoop=true; n_reviewers={luna['n_reviewers']}.
+    policy = f'''reviewLoop=true; n_reviewers={luna['n_reviewers']}.
 This owner-authorized review gate applies to implementation assignments only.
 After you believe implementation is finished, BEFORE your completion report to
 Astra, spawn exactly {luna['n_reviewers']} independent native Codex subagents.
@@ -158,6 +158,13 @@ fixes, and unresolved questions. No interim report to Astra/the user is needed.
 One batch per completed implementation/revision round; do not recursively spawn
 reviewers or repeat until unanimous approval. Exploration/review-only assignments
 and the native reviewers themselves do not trigger this gate.'''
+    if dict(luna).get('executor_backend', 'codex') == 'claude-code':
+        policy = policy.replace('native Codex subagents', 'native Claude Code subagents').replace(
+            'native spawn/wait/close subagent tools', 'native Agent tool (wait for every result)').replace(
+            'full-access/never\napproval settings', 'bypassPermissions settings').replace(
+            'closing completed native agents for slots', 'waiting for completed agents before starting the next batch')
+    return policy
+
 
 
 def boolean(value):
@@ -179,9 +186,10 @@ def bootstrap_message(result, store):
     handoff = store.db.execute('SELECT handoff FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['handoff']
     return f'''You are an execution actor for an owner-authorized review workflow.
 Your allowed roles are exploration, implementation, and review. Never plan or design.
-First bind this actual Codex conversation by running:
+First validate/bind this actual executor conversation by running:
 {command} bind-session --luna-id {luna['id']}
-The command reads your own CODEX_THREAD_ID. Never copy the parent's thread ID.
+The command uses your own backend identity from the launch environment. Never copy the parent's identity.
+Read applicable ancestor and workspace AGENTS.md and CLAUDE.md instructions before working.
 
 Your workstream: {luna['name']}
 Run: {result['run_id']}
@@ -256,6 +264,11 @@ def cmd_run_start(args):
                              or (args.n_reviewers is not None and args.n_reviewers != existing['n_reviewers'])):
                 if alive(existing['tmux_session'], existing['tmux_socket']):
                     raise ValueError('Stop the existing actor before changing reviewLoop or n_reviewers, then resume the same actor')
+            backend = args.executor_backend or (existing['executor_backend'] if existing else 'codex')
+            if backend == 'claude-code' and args.workspace_trust != 'trusted':
+                raise ValueError('Claude noninteractive actors require --workspace-trust trusted')
+            if existing and existing['executor_backend'] != backend:
+                raise ValueError('Backend changes require a new actor')
             model = args.luna_model or (existing['model'] if existing else None) or os.environ.get('ACLA_LUNA_MODEL') or DEFAULT_MODEL
             if model == 'local-model':
                 if args.luna_effort is not None:
@@ -264,18 +277,29 @@ def cmd_run_start(args):
             else:
                 effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or 'high'
                 if effort not in LUNA_EFFORTS:
-                    raise ValueError('GPT actor reasoning effort must be high, xhigh, or max')
+                    raise ValueError('Actor reasoning effort must be high, xhigh, or max')
             luna_id = existing['id'] if existing else new_id()
             session = existing['tmux_session'] if existing else safe_session(
                 f'{args.luna_name[:60]}-{run_id}-{luna_id}')
             command = shlex.join(['codex', '--model', model])
+            if backend == 'claude-code':
+                if model.startswith('gpt-'):
+                    raise ValueError('Select a Claude-compatible model for Claude Code')
+                executable = args.claude_command or (shlex.split(existing['command'])[0] if existing else
+                    ('claude-deepseek' if model == 'local-model' else 'claude'))
+                executable = shutil.which(executable)
+                if not executable:
+                    raise ValueError('Claude executable unavailable; provide --claude-command PATH')
+                command = shlex.join([executable, '--model', model])
+            elif args.claude_command:
+                raise ValueError('--claude-command requires --executor-backend claude-code')
             result = store.start_run(goal=args.goal, run_id=run_id, astra_id=None,
                 astra_name='Astra Critic', astra_workspace=str(Path.cwd()), astra_session=None,
                 astra_socket=None, astra_command='codex', astra_thread_id=astra_thread, codex_home=home,
                 luna_name=args.luna_name, luna_id=luna_id, luna_workspace=workspace,
                 luna_session=session, luna_socket=DEFAULT_SOCKET, luna_command=command,
                 luna_model=model, handoff=handoff,
-                review_loop=args.review_loop, n_reviewers=args.n_reviewers)
+                review_loop=args.review_loop, n_reviewers=args.n_reviewers, executor_backend=backend)
             luna = store.agent(result['luna_id'])
             approved = store.db.execute('SELECT approved FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['approved']
             pending = store.db.execute("""SELECT COUNT(*) FROM messages m JOIN threads t ON t.id=m.thread_id
@@ -307,6 +331,12 @@ def cmd_run_start(args):
                 argv.append(bootstrap_message(result, store))
             else:
                 argv.append(LUNA_REPORTING_POLICY + '\n\n' + review_loop_policy(luna))
+            if backend == 'claude-code':
+                if not alive(session, luna['tmux_socket']):
+                    store.db.execute('UPDATE agents SET reasoning_effort=? WHERE id=?', (effort, luna['id']))
+                    store.db.commit()
+                argv = [sys.executable, str(ROOT / 'acla_cli.py'), '--state', str(store.path.resolve()),
+                        '_claude-run', '--luna-id', luna['id']]
             created = launch(session, workspace, argv, agent_id=luna['id'], run_id=run_id,
                 role='luna', socket=luna['tmux_socket'], env={'CODEX_HOME': home,
                 'ACLA_STATE': str(store.path.resolve()), 'ACLA_LUNA_ID': luna['id']})
@@ -315,15 +345,15 @@ def cmd_run_start(args):
                 store.db.commit()
             watcher = start_watcher(store, args.interval)
             output({**result, 'tmux_session': session, 'tmux_socket': luna['tmux_socket'],
-                    'luna_model': luna['model'], 'launched': created,
+                    'luna_model': luna['model'], 'executor_backend': backend, 'claude_session_id': luna['claude_session_id'], 'launched': created,
                     'reviewLoop': bool(luna['review_loop']), 'n_reviewers': luna['n_reviewers'],
                     'reasoning_effort_supported': model != 'local-model',
-                    'reasoning_mode': 'upstream-default-unmapped' if model == 'local-model' else 'codex-effort',
+                    'reasoning_mode': 'upstream-default-unmapped' if model == 'local-model' else ('claude-effort' if backend == 'claude-code' else 'codex-effort'),
                     'requested_luna_effort': effort,
                     'luna_launch_effort': effort if created else luna['reasoning_effort'],
                     'effort_restart_required': not created and luna['reasoning_effort'] != effort,
                     'workspace_trust': args.workspace_trust if created else 'existing-session',
-                    'state': ('resuming' if created else 'bound') if luna['codex_thread_id'] else 'awaiting_actor_binding', 'watcher': watcher})
+                    'state': ('resuming' if created else 'bound') if (luna['codex_thread_id'] or luna['claude_initialized']) else 'awaiting_actor_binding', 'watcher': watcher})
     finally:
         store.close()
 
@@ -331,6 +361,11 @@ def cmd_run_start(args):
 def cmd_bind(args):
     store = Store(args.state)
     try:
+        luna = store.agent(args.luna_id)
+        if luna['executor_backend'] == 'claude-code':
+            require_luna(luna)
+            output({'luna_id': luna['id'], 'claude_session_id': luna['claude_session_id'], 'state': 'ready'})
+            return
         store.bind_codex_thread(args.luna_id, native_thread(), codex_home())
         output({'luna_id': args.luna_id, 'codex_thread_id': native_thread(), 'state': 'ready'})
     finally:
@@ -362,8 +397,7 @@ def cmd_luna_message(args):
     store = Store(args.state)
     try:
         luna = store.agent(args.luna_id)
-        if luna['codex_thread_id'] != native_thread() or luna['codex_home'] != codex_home():
-            raise ValueError('This Codex task is not the bound Luna')
+        require_luna(luna)
         thread = store.thread_for_luna(args.luna_id)
         body = read_body(args)
         if args.command == 'ask-question':
@@ -391,7 +425,7 @@ def cmd_poll(args, *, quiet=False):
             rows = store.notification_batch(args.limit)
             for row in rows:
                 recipient = store.agent(row['recipient_id'])
-                if not recipient['codex_thread_id']:
+                if recipient['executor_backend'] == 'claude-code' or not recipient['codex_thread_id']:
                     continue
                 if not store.notification_dispatching(recipient['id'], row['notification_id']):
                     continue
@@ -471,7 +505,21 @@ def cmd_messages(args):
         store.close()
 
 
+def require_luna(luna):
+    if luna['executor_backend'] == 'claude-code':
+        valid = (os.environ.get('ACLA_LUNA_ID') == luna['id'] and
+                 os.environ.get('ACLA_CLAUDE_SESSION_ID') == luna['claude_session_id'])
+    else:
+        valid = luna['codex_thread_id'] == native_thread()
+    if luna['kind'] != 'luna' or not valid or luna['codex_home'] != codex_home():
+        raise ValueError('This executor is not the bound Luna')
+
+
 def bound_recipient(store):
+    if os.environ.get('ACLA_CLAUDE_SESSION_ID'):
+        row = store.agent(os.environ.get('ACLA_LUNA_ID'))
+        require_luna(row)
+        return row
     row = store.find_codex_agent('astra', native_thread(), codex_home())
     if row is None:
         row = store.find_codex_agent('luna', native_thread(), codex_home())
@@ -549,9 +597,11 @@ def build_parser():
     for name in ('run-id', 'goal', 'workspace', 'luna-name', 'handoff-file'):
         start.add_argument('--' + name, required=True)
     start.add_argument('--astra-thread')
+    start.add_argument('--executor-backend', choices=('codex', 'claude-code'), help='New actors default to codex; resumes retain their backend')
+    start.add_argument('--claude-command', help='Claude executable path (default: claude-deepseek for DeepSeek, otherwise claude)')
     start.add_argument('--luna-model', help='Actor model; new actors default to local-model, resumes preserve the saved model')
     start.add_argument('--luna-effort', choices=LUNA_EFFORTS,
-                       help='GPT actors only: high by default; unavailable for Local model')
+                       help='high by default for supported models; unavailable for Local model')
     start.add_argument('--interval', type=int, default=300)
     start.add_argument('--reviewLoop', '--review-loop', dest='review_loop', type=boolean,
                        help='true/false: native plan-conformance review gate (new actors default true)')
@@ -560,6 +610,8 @@ def build_parser():
     start.add_argument('--workspace-trust', choices=('trusted', 'configured'), default='trusted',
                        help='Trust the selected actor workspace for this launch (default), '
                             'or use existing Codex trust configuration and prompts')
+    from .claude_runner import run as run_claude
+    runner = command('_claude-run', run_claude); runner.add_argument('--luna-id', required=True)
     bind = command('bind-session', cmd_bind); bind.add_argument('--luna-id', required=True)
     for name, handler in [('send', cmd_send), ('send-reply', cmd_luna_message), ('ask-question', cmd_luna_message), ('approve', cmd_approve)]:
         c = command(name, handler)
