@@ -19,6 +19,7 @@ from .tmux import DEFAULT_SOCKET, alive, metadata, launch, safe_session, stop_ow
 from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_BACKEND = 'claude-code'
 DEFAULT_MODEL = 'local-model'
 DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5'
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
@@ -266,7 +267,7 @@ def cmd_run_start(args):
                              or (args.n_reviewers is not None and args.n_reviewers != existing['n_reviewers'])):
                 if alive(existing['tmux_session'], existing['tmux_socket']):
                     raise ValueError('Stop the existing actor before changing reviewLoop or n_reviewers, then resume the same actor')
-            backend = args.executor_backend or (existing['executor_backend'] if existing else 'codex')
+            backend = args.executor_backend or (existing['executor_backend'] if existing else DEFAULT_BACKEND)
             if backend == 'claude-code' and args.workspace_trust != 'trusted':
                 raise ValueError('Claude noninteractive actors require --workspace-trust trusted')
             if existing and existing['executor_backend'] != backend:
@@ -600,7 +601,7 @@ def build_parser():
     for name in ('run-id', 'goal', 'workspace', 'luna-name', 'handoff-file'):
         start.add_argument('--' + name, required=True)
     start.add_argument('--astra-thread')
-    start.add_argument('--executor-backend', choices=('codex', 'claude-code'), help='New actors default to codex; resumes retain their backend')
+    start.add_argument('--executor-backend', choices=('codex', 'claude-code'), help='New actors default to claude-code; resumes retain their backend')
     start.add_argument('--claude-command', help='Claude executable path (default: claude-deepseek for DeepSeek, otherwise claude)')
     start.add_argument('--luna-model', help='Codex defaults to local-model; Claude Code to claude-opus-5-5; resumes preserve the saved model')
     start.add_argument('--luna-effort', choices=('medium', *LUNA_EFFORTS),

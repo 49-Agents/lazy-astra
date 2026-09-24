@@ -5,6 +5,10 @@ description: "Invoke when the user says 'run the astra critic luna actor' or exp
 
 # Astra Critic Luna Actor
 
+**New actor default: Claude Code, `claude-opus-5-5`, medium effort.**
+Use `--executor-backend codex` to explicitly select Codex (DeepSeek by default).
+Existing actors retain their saved backend, model and effort on resume.
+
 The secret phrase is **run the astra critic luna actor**, ignoring case and hyphens.
 This is a standalone plugin. It needs Python 3.10+, tmux, a signed-in Codex CLI
 with `codex queue`, and the requested model (default `local-model`). No external business platform
@@ -76,7 +80,7 @@ If that environment variable is absent, use a known exact task UUID through
      --handoff-file '/absolute/handoff.md' --interval 300
    ```
 
-   The launcher selects Local model, supplies the complete handoff in the initial
+   The launcher selects Claude Code with Opus 5.5 at medium effort, supplies the complete handoff in the initial
    CLI prompt, and starts one watcher. It returns the run, actor, review-thread,
    and tmux identities. Save them. `awaiting_actor_binding` means the process
    started but has not yet registered its actual Codex conversation. Check status;
@@ -129,7 +133,7 @@ Claude session history stays in the launcher's configured Claude directory.
 
 **Use Local model for new Codex actors; Opus 5.5 medium for new Claude Code actors.** The historical Luna name and
 `--luna-model` flag remain for compatibility. Astra stays the critic. Use the
-selected executor backend (Codex by default). Codex uses its configured Local provider router. This machine routes `local-model` through
+selected executor backend (Claude Code by default). Codex uses its configured Local provider router. This machine routes `local-model` through
 `http://127.0.0.1:18445/v1` to the friend's hosted DeepSeek server. The router and
 model catalog must already be configured in the actor's CODEX_HOME. An explicit
 `--luna-model` (or ACLA_LUNA_MODEL for new actors) is an intentional override;

@@ -21,6 +21,9 @@ class CliWorkflowTests(unittest.TestCase):
     run_id = "42345678-1234-5678-1234-567812345678"
 
     def setUp(self):
+        self.backend_default = mock.patch('acla.cli.DEFAULT_BACKEND', 'codex')
+        self.backend_default.start()
+        self.addCleanup(self.backend_default.stop)
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.state = root / "private" / "state.sqlite3"
@@ -68,6 +71,13 @@ class CliWorkflowTests(unittest.TestCase):
 
     def store(self):
         return Store(self.state)
+
+    def test_new_actor_defaults_to_claude_opus_medium(self):
+        with mock.patch('acla.cli.DEFAULT_BACKEND', 'claude-code'), mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x):
+            result = self.start_actor()
+        self.assertEqual(result['executor_backend'], 'claude-code')
+        self.assertEqual(result['luna_model'], 'claude-opus-5-5')
+        self.assertEqual(result['luna_launch_effort'], 'medium')
 
     def test_claude_defaults_and_identity_are_retained(self):
         args = ('run-start', '--run-id', self.run_id, '--goal', 'Review parser',

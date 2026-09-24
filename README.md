@@ -1,6 +1,10 @@
 # Astra Critic Luna Actor
 
-A standalone Codex plugin for an Astra critic and Local model actors. Invoke the
+**New actor default: Claude Code, `claude-opus-5-5`, medium effort.**
+Use `--executor-backend codex` to explicitly select Codex (DeepSeek by default).
+Existing actors retain their saved backend, model and effort on resume.
+
+A standalone Codex plugin for an Astra critic and Opus 5.5 actors. Invoke the
 single skill by saying **run the astra critic luna actor** after discussing your
 issue with Astra. Astra prepares the handoff, launches actors in tmux, reviews
 reports, and sends corrections until it approves the work.
@@ -83,8 +87,8 @@ Choose the CLI independently of the model:
 
 ```bash
 # Add to run-start; the remaining required arguments stay the same:
---executor-backend codex       # default
---executor-backend claude-code # defaults to Opus 5.5, medium effort
+--executor-backend codex       # explicit DeepSeek/Codex option
+--executor-backend claude-code # default; defaults to Opus 5.5, medium effort
 # Native Claude instead, with existing authentication:
 --executor-backend claude-code --luna-model sonnet
 ```
