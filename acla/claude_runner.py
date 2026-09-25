@@ -43,7 +43,7 @@ def run(args):
             env = dict(os.environ)
             env.pop('CODEX_THREAD_ID', None)
             env.pop('CLAUDECODE', None)
-            env.update(ACLA_STATE=str(store.path.resolve()), ACLA_LUNA_ID=luna['id'],
+            env.update(ACLA_STATE=str(store.path.resolve()), ACLA_WORKER_ID=luna['id'], ACLA_LUNA_ID=luna['id'],
                        ACLA_CLAUDE_SESSION_ID=luna['claude_session_id'], CODEX_HOME=luna['codex_home'])
             first = True
             while True:

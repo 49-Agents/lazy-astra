@@ -1,30 +1,30 @@
 {
   "name": "astra-critic-luna-actor",
-  "version": "0.1.0+codex.20260925182833",
-  "description": "Run an Astra critic and Luna actor review loop with a local inbox and tmux sessions.",
+  "version": "0.1.0+codex.20260925201153",
+  "description": "Run the ACLA Manager and Worker review workflow with a local inbox and tmux sessions.",
   "author": {
     "name": "ACLA contributors"
   },
   "license": "MIT",
   "keywords": [
-    "astra",
-    "luna",
-    "critic",
-    "actor",
+    "manager",
+    "worker",
+    "review",
+    "coordination",
     "inbox",
     "tmux"
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Astra Critic Luna Actor",
-    "shortDescription": "Coordinate Astra reviews and Luna work.",
-    "longDescription": "A standalone local inbox, tmux launcher, and Codex skill for an Astra critic and Luna actor review loop.",
+    "displayName": "ACLA Manager\u2013Worker",
+    "shortDescription": "Coordinate Manager reviews and Worker implementation.",
+    "longDescription": "A standalone local inbox, tmux launcher, and Codex skill for the ACLA Manager\u2013Worker workflow.",
     "developerName": "ACLA contributors",
     "category": "Productivity",
     "capabilities": [
       "Interactive",
       "Write"
     ],
-    "defaultPrompt": "Run the Astra Critic Luna Actor workflow."
+    "defaultPrompt": "Run the default ACLA Manager\u2013Worker loop."
   }
 }

@@ -108,7 +108,7 @@ def launch(session: str, workspace: str, command: str | list[str], *, agent_id: 
     argv = shlex.split(command) if isinstance(command, str) else list(command)
     if not argv:
         raise ValueError("runtime command is empty")
-    # A child must not inherit the Astra/Codex thread binding from its launcher.
+    # A child must not inherit the Manager/Codex thread binding from its launcher.
     # Apply requested environment only after clearing those inherited identities.
     clean = ["env", "-u", "CODEX_THREAD_ID"]
     for key in sorted(_environment_keys(socket)):

@@ -215,7 +215,7 @@ class Store:
             try:
                 astra_thread_id = str(uuid.UUID(astra_thread_id))
             except (ValueError, AttributeError):
-                raise ValueError("Astra Codex thread ID must be a UUID")
+                raise ValueError("Manager Codex thread ID must be a UUID")
         run_id = run_id or new_id()
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -231,7 +231,7 @@ class Store:
             persisted_astra = run["astra_id"]
             if persisted_astra:
                 if astra_id and astra_id != persisted_astra:
-                    raise ValueError("run ID is already bound to a different Astra")
+                    raise ValueError("run ID is already bound to a different Manager")
                 actual_astra = persisted_astra
             else:
                 existing_destination = (self.find_codex_agent("astra", astra_thread_id, codex_home)
@@ -258,7 +258,7 @@ class Store:
                     raise ValueError('Cannot change backend of an existing actor; create a new actor')
                 actual_luna = existing["id"]
                 if luna_id and luna_id != actual_luna:
-                    raise ValueError("run stream name and Luna ID refer to different actors")
+                    raise ValueError("run stream name and Worker ID refer to different actors")
                 self._destination(actual_luna, workspace=luna_workspace, tmux_session=luna_session,
                                   tmux_socket=luna_socket, command=luna_command)
                 self._codex_identity(actual_luna, None, codex_home, luna_model)
@@ -270,7 +270,7 @@ class Store:
                 if luna_id:
                     existing_agent = self.db.execute("SELECT id FROM agents WHERE id=?", (luna_id,)).fetchone()
                     if existing_agent:
-                        raise ValueError("Luna ID exists but is not part of this run")
+                        raise ValueError("Worker ID exists but is not part of this run")
                 self._insert_agent("luna", luna_name, workspace=luna_workspace, tmux_session=luna_session,
                                    tmux_socket=luna_socket, command=luna_command, agent_id=actual_luna,
                                    codex_home=codex_home, model=luna_model)
@@ -280,7 +280,7 @@ class Store:
                      new_id() if executor_backend == 'claude-code' else None, actual_luna))
             pair = self.db.execute("SELECT * FROM pairs WHERE luna_id=?", (actual_luna,)).fetchone()
             if pair and (pair["run_id"] != run_id or pair["astra_id"] != actual_astra):
-                raise ValueError("Luna is already bound to another Astra/run")
+                raise ValueError("Worker is already bound to another Manager/run")
             self.db.execute("INSERT OR IGNORE INTO pairs(luna_id,astra_id,run_id) VALUES(?,?,?)",
                             (actual_luna, actual_astra, run_id))
             self.db.execute("UPDATE pairs SET handoff=COALESCE(handoff, ?) WHERE luna_id=?", (handoff, actual_luna))
@@ -312,15 +312,15 @@ class Store:
         try:
             agent = self.agent(luna_id)
             if agent["kind"] != "luna":
-                raise ValueError("only Luna agents can bind a Codex thread")
+                raise ValueError("only Worker agents can bind a Codex thread")
             if agent["codex_home"] not in (None, codex_home):
-                raise ValueError("Codex home does not match Luna identity")
+                raise ValueError("Codex home does not match Worker identity")
             if agent["codex_thread_id"] not in (None, canonical):
-                raise ValueError("Luna is already bound to a different Codex thread")
+                raise ValueError("Worker is already bound to a different Codex thread")
             other = self.db.execute("SELECT id FROM agents WHERE kind='luna' AND codex_thread_id=? AND codex_home=? AND id<>?",
                                     (canonical, codex_home, luna_id)).fetchone()
             if other:
-                raise ValueError("Codex thread is already bound to another Luna")
+                raise ValueError("Codex thread is already bound to another Worker")
             self.db.execute("UPDATE agents SET codex_thread_id=?,codex_home=? WHERE id=?", (canonical, codex_home, luna_id))
             self.db.commit()
         except Exception:
@@ -333,7 +333,7 @@ class Store:
         else:
             row = self.db.execute("SELECT * FROM threads WHERE luna_id=? ORDER BY created_at DESC LIMIT 1", (luna_id,)).fetchone()
         if not row:
-            raise ValueError("Luna has no matching Astra thread")
+            raise ValueError("Worker has no matching Manager thread")
         return row
 
     def send(self, thread_id: str, sender_id: str, body: str, key: str | None = None, reply_to: int | None = None) -> dict:
@@ -473,6 +473,7 @@ class Store:
     def approve(self, thread_id: str, astra_id: str, body: str, key: str, reply_to: int | None = None) -> dict:
         if not body.strip():
             raise ValueError("message body cannot be empty")
+        # Keep the established approval marker for already-running Workers.
         body = "ASTRA_APPROVED\n" + body
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -480,7 +481,7 @@ class Store:
             if not thread:
                 raise ValueError(f"unknown thread: {thread_id}")
             if astra_id != thread["astra_id"]:
-                raise ValueError("only the thread's Astra can approve")
+                raise ValueError("only the thread's Manager can approve")
             old = self.db.execute("SELECT m.*,i.reply_to FROM idempotency i JOIN messages m ON m.id=i.message_id WHERE i.sender_id=? AND i.key=?",
                                   (astra_id, key)).fetchone()
             if old:

@@ -174,7 +174,8 @@ def collect(state):
         rows = [m for m in messages if m['thread_id'] in tids]
         eligible = [m for m in rows if not m['legacy'] or m['delivered_at'] is None]
         pending = [m for m in eligible if not m['handled_at']]
-        questions = [m for m in rows if m['body'].startswith('LUNA_QUESTION\n')]
+        question_prefixes = ('WORKER_QUESTION\n', 'LUNA_QUESTION\n')
+        questions = [m for m in rows if m['body'].startswith(question_prefixes)]
         result['runs'].append({
             'run_id': run['id'], 'state': run['state'], 'created_at': run['created_at'],
             'approved_at': run['updated_at'] if run['state'] == 'approved' else None,
@@ -184,9 +185,12 @@ def collect(state):
             'messages': len(rows), 'questions': len(questions),
             'questions_with_explicit_reply': sum(m['id'] in replies for m in questions),
             'unhandled_questions': sum(m in pending for m in questions),
-            'review_requests_prefix_count': sum(m['body'].startswith('ASTRA_REVIEW') for m in rows),
+            'review_requests_prefix_count': sum(m['body'].startswith(('MANAGER_REVIEW', 'ASTRA_REVIEW')) for m in rows),
+            'worker_report_candidates': sum(agents[m['sender_id']]['kind'] == 'luna' and
+                                            not m['body'].startswith(question_prefixes) for m in rows),
+            # Preserve the original field for readers of existing local reports.
             'luna_report_candidates': sum(agents[m['sender_id']]['kind'] == 'luna' and
-                                          not m['body'].startswith('LUNA_QUESTION\n') for m in rows),
+                                          not m['body'].startswith(question_prefixes) for m in rows),
             'legacy_handling_unknown': sum(bool(m['legacy'] and m['delivered_at'] and not m['handled_at']) for m in rows),
             'unhandled': len(pending), 'claimed': sum(bool(m['inbox_token']) for m in pending),
             'oldest_unhandled_seconds': max((seconds(m['created_at'], stamp) or 0 for m in pending), default=None),
@@ -202,7 +206,9 @@ def collect(state):
             usage = ({'source': 'Codex state_5.sqlite tokens_used',
                       'total_tokens': count} if count is not None else None)
         agent_tokens[aid] = usage
-        result['agents'].append({'agent_id': aid, 'kind': agent['kind'], 'name': agent['name'],
+        result['agents'].append({'agent_id': aid, 'kind': agent['kind'],
+                                'role': 'Manager' if agent['kind'] == 'astra' else 'Worker',
+                                'name': agent['name'],
                                 'executor_backend': agent.get('executor_backend', 'codex'),
                                 'model': agent.get('model'), 'token_usage': usage,
                                 'notification_state': note['state'] if note else None,
@@ -250,7 +256,8 @@ def collect(state):
             item['tokens'].append(usage['input_tokens'] + usage['output_tokens'])
             item['reported_cost_usd'].append(usage['reported_cost_usd'])
     result['token_usage']['acla_by_role_backend_model'] = [
-        {'kind': key[0], 'executor_backend': key[1], 'model': key[2],
+        {'kind': key[0], 'role': 'Manager' if key[0] == 'astra' else 'Worker',
+         'executor_backend': key[1], 'model': key[2],
          **token_distribution(values['tokens']),
          'reported_cost_usd_total': (round(sum(x for x in values['reported_cost_usd'] if x is not None), 4)
                                      if values['reported_cost_usd'] else None),

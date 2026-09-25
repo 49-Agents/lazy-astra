@@ -222,7 +222,7 @@ class CliWorkflowTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": self.luna_one_thread}):
             self.invoke("bind-session", "--luna-id", result["luna_id"])
         self.invoke_fails("send-reply", "--luna-id", result["luna_id"], "--body", "done",
-                          "--idempotency-key", "reply-1", contains="not the bound Luna")
+                          "--idempotency-key", "reply-1", contains="not the bound Worker")
         store = self.store()
         try:
             self.assertEqual(store.messages(result["thread_id"]), [])

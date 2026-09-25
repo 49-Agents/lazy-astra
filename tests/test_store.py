@@ -75,7 +75,7 @@ class StoreTests(unittest.TestCase):
             self.store.bind_codex_thread(ids["luna_id"], str(uuid.uuid4()), "/home/codex")
         with self.assertRaisesRegex(ValueError, "Codex home"):
             self.store.bind_codex_thread(ids["luna_id"], thread_id, "/other")
-        with self.assertRaisesRegex(ValueError, "only Luna"):
+        with self.assertRaisesRegex(ValueError, "only Worker"):
             self.store.bind_codex_thread(ids["astra_id"], thread_id, "/home/codex")
 
     def test_approval_closes_actor_and_run_only_after_all_actors(self):

@@ -21,7 +21,7 @@ Agent names, IDs, timestamps and aggregate measurements are included.
 
 - Run completion, duration, actors approved, message volume, question count,
   explicit replies and review-request prefixes describe workflow activity.
-- `luna_report_candidates` counts Luna messages other than question-prefixed
+- `worker_report_candidates` counts Worker messages other than question-prefixed
   messages. It is an estimate, not a semantic classification or correctness score.
 - Unhandled backlog, age and handling latency use the new inbox protocol.
   `legacy_handling_unknown` keeps old delivered history separate. Acknowledging a

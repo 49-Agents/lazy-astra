@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "astra-critic-luna-actor"
 version = "0.1.0"
-description = "Standalone Astra critic and Luna actor coordination loop"
+description = "Standalone ACLA Manager–Worker coordination loop"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 
