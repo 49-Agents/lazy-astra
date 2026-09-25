@@ -20,7 +20,6 @@ from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BACKEND = 'claude-code'
-DEFAULT_MODEL = 'local-model'
 DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5'
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
 LUNA_REPORTING_POLICY = '''Luna communication and decision policy:
@@ -36,9 +35,9 @@ If asked to plan or design, or if a missing decision blocks the assignment, use
 ask-question to request Astra's decision and pause affected work. Do not relabel
 planning as exploration/review or delegate it to another subagent.
 Claude Code defaults to Opus 5.5 with medium effort. Preserve the configured effort.
-For GPT actors, reasoning effort must remain at least high; Astra selects high,
-xhigh, or max. Local model uses upstream defaults: its current adapter does
-not map Codex reasoning effort, so never claim equivalent high/xhigh/max reasoning.
+For models with configured reasoning-effort support, follow the selected
+backend’s effort options. If effort mapping is unknown, omit the flag and report
+that the provider uses its own default.
 Do not enable fast/priority service for any actor.
 Execute the agreed handoff and Astra's explicit review instructions. Do not make
 independent decisions about the plan, scope, requirements, design, tradeoffs, or
@@ -100,6 +99,20 @@ def state_lock(store, name, *, blocking=True):
         yield
     finally:
         os.close(descriptor)
+
+
+def local_config(state_path):
+    """Load optional, user-private model/provider defaults beside local state."""
+    path = Path(os.environ.get('ACLA_LOCAL_CONFIG', Path(state_path).expanduser().resolve().parent / 'local.json')).expanduser()
+    try:
+        config = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {'defaults': {}, 'models': {}}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f'Cannot read local ACLA config {path}: {type(exc).__name__}') from exc
+    if not isinstance(config, dict) or not isinstance(config.get('defaults', {}), dict) or not isinstance(config.get('models', {}), dict):
+        raise ValueError('Local ACLA config must contain object-valued defaults and models')
+    return {'defaults': config.get('defaults', {}), 'models': config.get('models', {})}
 
 
 def helper(store):
@@ -167,7 +180,8 @@ and the native reviewers themselves do not trigger this gate.'''
             'full-access/never\napproval settings', 'bypassPermissions settings').replace(
             'closing completed native agents for slots', 'waiting for completed agents before starting the next batch')
     reviewer_model = dict(luna).get('reviewer_model') or luna['model']
-    policy = policy.replace('inherit your model and', f'use reviewer model {reviewer_model} and inherit your')
+    if dict(luna).get('executor_backend') == 'claude-code' and reviewer_model:
+        policy = policy.replace('inherit your model and', f'use reviewer model {reviewer_model} and inherit your')
     return policy
 
 
@@ -269,43 +283,51 @@ def cmd_run_start(args):
                              or (args.n_reviewers is not None and args.n_reviewers != existing['n_reviewers'])):
                 if alive(existing['tmux_session'], existing['tmux_socket']):
                     raise ValueError('Stop the existing actor before changing reviewLoop or n_reviewers, then resume the same actor')
-            backend = args.executor_backend or (existing['executor_backend'] if existing else DEFAULT_BACKEND)
+            config = local_config(store.path)
+            defaults = config['defaults']
+            backend = args.executor_backend or (existing['executor_backend'] if existing else defaults.get('executor_backend', DEFAULT_BACKEND))
             if backend == 'claude-code' and args.workspace_trust != 'trusted':
                 raise ValueError('Claude noninteractive actors require --workspace-trust trusted')
             if existing and existing['executor_backend'] != backend:
                 raise ValueError('Backend changes require a new actor')
-            model = args.luna_model or (existing['model'] if existing else None) or os.environ.get('ACLA_LUNA_MODEL') or (DEFAULT_CLAUDE_MODEL if backend == 'claude-code' else DEFAULT_MODEL)
-            if model == 'local-model':
+            model = args.luna_model or (existing['model'] if existing else None) or os.environ.get('ACLA_LUNA_MODEL') or defaults.get('claude_model' if backend == 'claude-code' else 'codex_model') or (DEFAULT_CLAUDE_MODEL if backend == 'claude-code' else None)
+            model_options = config['models'].get(model, {}) if model else {}
+            effort_supported = bool(model) and model_options.get('reasoning_effort_supported', True)
+            if existing:
+                effort_supported = bool(existing['reasoning_effort_supported'])
+                model_options = {**model_options, 'reasoning_mode': existing['reasoning_mode']}
+            if not effort_supported:
                 if args.luna_effort is not None:
-                    raise ValueError('Local model does not support --luna-effort; omit it to use upstream defaults')
-                effort = 'none'  # Catalog value; not a claim that upstream reasoning is disabled.
+                    raise ValueError('This model is configured without ACLA reasoning-effort support')
+                effort = existing['reasoning_effort'] if existing else model_options.get('reasoning_effort')
             else:
-                effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or ('medium' if backend == 'claude-code' else 'high')
+                effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or defaults.get('claude_effort' if backend == 'claude-code' else 'codex_effort') or ('medium' if backend == 'claude-code' else 'high')
                 allowed_efforts = ('medium', *LUNA_EFFORTS) if backend == 'claude-code' else LUNA_EFFORTS
                 if effort not in allowed_efforts:
-                    raise ValueError('Actor reasoning effort must be high, xhigh, or max')
+                    raise ValueError('Effort must be medium/high/xhigh/max for Claude Code or high/xhigh/max for supported Codex models')
             luna_id = existing['id'] if existing else new_id()
             session = existing['tmux_session'] if existing else safe_session(
                 f'{args.luna_name[:60]}-{run_id}-{luna_id}')
-            command = shlex.join(['codex', '--model', model])
+            command = shlex.join(['codex'] + (['--model', model] if model else []))
             if backend == 'claude-code':
-                if model.startswith('gpt-'):
-                    raise ValueError('Select a Claude-compatible model for Claude Code')
                 executable = args.claude_command or (shlex.split(existing['command'])[0] if existing else
-                    ('claude-deepseek' if model == 'local-model' else 'claude'))
+                    model_options.get('claude_command') or defaults.get('claude_command') or 'claude')
                 executable = shutil.which(executable)
                 if not executable:
                     raise ValueError('Claude executable unavailable; provide --claude-command PATH')
                 command = shlex.join([executable, '--model', model])
             elif args.claude_command:
                 raise ValueError('--claude-command requires --executor-backend claude-code')
+            reviewer_model = model_options.get('reviewer_model') or defaults.get('reviewer_model') or (('sonnet' if backend == 'claude-code' else model) if model else None)
             result = store.start_run(goal=args.goal, run_id=run_id, astra_id=None,
                 astra_name='Astra Critic', astra_workspace=str(Path.cwd()), astra_session=None,
                 astra_socket=None, astra_command='codex', astra_thread_id=astra_thread, codex_home=home,
                 luna_name=args.luna_name, luna_id=luna_id, luna_workspace=workspace,
                 luna_session=session, luna_socket=DEFAULT_SOCKET, luna_command=command,
                 luna_model=model, handoff=handoff,
-                review_loop=args.review_loop, n_reviewers=args.n_reviewers, executor_backend=backend)
+                review_loop=args.review_loop, n_reviewers=args.n_reviewers, executor_backend=backend, reviewer_model=reviewer_model,
+                reasoning_effort_supported=effort_supported,
+                reasoning_mode=model_options.get('reasoning_mode') or ('claude-effort' if backend == 'claude-code' else ('codex-effort' if effort_supported else 'model-default-unmapped')))
             luna = store.agent(result['luna_id'])
             approved = store.db.execute('SELECT approved FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()['approved']
             pending = store.db.execute("""SELECT COUNT(*) FROM messages m JOIN threads t ON t.id=m.thread_id
@@ -322,8 +344,9 @@ def cmd_run_start(args):
                      '--sandbox', 'danger-full-access', '--ask-for-approval', 'never',
                      '--config', 'check_for_update_on_startup=false',
                      '--config', 'service_tier="default"',
-                     '--config', f'model_reasoning_effort="{effort}"',
                      '--add-dir', str(store.path.parent.resolve())]
+            if effort:
+                argv += ['--config', f'model_reasoning_effort="{effort}"']
             if luna['review_loop']:
                 argv += ['--config', 'features.multi_agent=true']
             if args.workspace_trust == 'trusted':
@@ -354,8 +377,8 @@ def cmd_run_start(args):
                     'luna_model': luna['model'], 'executor_backend': backend, 'claude_session_id': luna['claude_session_id'], 'launched': created,
                     'reviewLoop': bool(luna['review_loop']), 'n_reviewers': luna['n_reviewers'],
                     'reviewer_model': luna['reviewer_model'] or luna['model'],
-                    'reasoning_effort_supported': model != 'local-model',
-                    'reasoning_mode': 'upstream-default-unmapped' if model == 'local-model' else ('claude-effort' if backend == 'claude-code' else 'codex-effort'),
+                    'reasoning_effort_supported': bool(luna['reasoning_effort_supported']),
+                    'reasoning_mode': luna['reasoning_mode'],
                     'requested_luna_effort': effort,
                     'luna_launch_effort': effort if created else luna['reasoning_effort'],
                     'effort_restart_required': not created and luna['reasoning_effort'] != effort,
@@ -592,7 +615,7 @@ def cmd_stop_actor(args):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog='acla', description='Standalone Astra critic / Local model actor workflow')
+    p = argparse.ArgumentParser(prog='acla', description='Standalone Astra critic and actor workflow')
     p.add_argument('--state', help='Private SQLite path')
     sub = p.add_subparsers(dest='command', required=True)
     def command(name, handler):
@@ -605,10 +628,10 @@ def build_parser():
         start.add_argument('--' + name, required=True)
     start.add_argument('--astra-thread')
     start.add_argument('--executor-backend', choices=('codex', 'claude-code'), help='New actors default to claude-code; resumes retain their backend')
-    start.add_argument('--claude-command', help='Claude executable path (default: claude-deepseek for DeepSeek, otherwise claude)')
-    start.add_argument('--luna-model', help='Codex defaults to local-model; Claude Code to claude-opus-5-5; resumes preserve the saved model')
+    start.add_argument('--claude-command', help='Claude executable path; defaults to the local model configuration or claude')
+    start.add_argument('--luna-model', help='Codex uses its configured default; Claude Code defaults to claude-opus-5-5; resumes preserve saved model')
     start.add_argument('--luna-effort', choices=('medium', *LUNA_EFFORTS),
-                       help='Claude defaults medium; GPT requires high/xhigh/max; unavailable for DeepSeek')
+                       help='Claude accepts medium/high/xhigh/max; Codex support and defaults follow the selected model configuration')
     start.add_argument('--interval', type=int, default=300)
     start.add_argument('--reviewLoop', '--review-loop', dest='review_loop', type=boolean,
                        help='true/false: native plan-conformance review gate (new actors default true)')

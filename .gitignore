@@ -9,3 +9,9 @@ build/
 .env
 
 worktrees/
+
+# Local-only ACLA configuration and reports
+local.json
+acla.local.json
+telemetry/
+claude-runtime/

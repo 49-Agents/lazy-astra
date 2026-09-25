@@ -6,7 +6,7 @@ description: "Invoke when the user says 'run the astra critic luna actor' or exp
 # Astra Critic Luna Actor
 
 **New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one Sonnet reviewer.**
-Use `--executor-backend codex` to explicitly select Codex (DeepSeek by default).
+Use `--executor-backend codex` to select Codex with its configured model.
 Existing actors retain their saved backend, model and effort on resume.
 
 The secret phrase is **run the astra critic luna actor**, ignoring case and hyphens.
@@ -51,11 +51,6 @@ Resolve this loaded SKILL.md's path. The plugin root is **two directories above
 its containing skill directory** and contains `acla_cli.py` and `acla/`.
 Use that absolute root for all commands, including after compaction. Do not assume
 `~/astra-critic-luna-actor` contains the same installed version.
-For this local deployment only, `/home/example/plugins/astra-critic-luna-actor` is a
-documented helper alias; generic package code must not depend on that path. If an
-older task has a historical helper path in its bootstrap, first check the current
-installed skill root and use its helper for new operations.
-
 In the examples, replace `/absolute/plugin` with that root. Use quoted paths.
 The helper binds Astra from `CODEX_THREAD_ID`; it never guesses a task by its name.
 If that environment variable is absent, use a known exact task UUID through
@@ -94,14 +89,14 @@ If that environment variable is absent, use a known exact task UUID through
 ### Choose the executor backend
 
 `--executor-backend codex|claude-code` selects the CLI harness independently of
-`--luna-model`. New Codex actors default to Local model. New Claude Code actors default to
+`--luna-model`. New Codex actors use the Codex-configured model unless local config
+or `--luna-model` selects another. New Claude Code actors default to
 `claude-opus-5-5` with `--luna-effort medium`. Saved backend,
 model, executable and native session identity are retained on resume; switching
 backends requires a new actor and a reconciled handoff, never conversion in place.
 
 For Claude Code, add `--executor-backend claude-code` (Opus 5.5, medium effort).
-Explicit `--luna-model local-model` uses the installed
-`claude-deepseek` executable; `--claude-command /absolute/executable` overrides it.
+`--claude-command /absolute/executable` overrides the configured Claude executable.
 A native Claude model can be explicitly selected with `--luna-model sonnet` and
 uses `claude` by default. Never silently fall back to a different model/provider.
 Claude authentication/gateway setup must already work.
@@ -131,26 +126,17 @@ Claude session history stays in the launcher's configured Claude directory.
 
 ### Model speed, permissions, and workspace trust
 
-**Use Local model for new Codex actors; Opus 5.5 medium for new Claude Code actors.** The historical Luna name and
-`--luna-model` flag remain for compatibility. Astra stays the critic. Use the
-selected executor backend (Claude Code by default). Codex uses its configured Local provider router. This machine routes `local-model` through
-`http://127.0.0.1:18445/v1` to the friend's hosted DeepSeek server. The router and
-model catalog must already be configured in the actor's CODEX_HOME. An explicit
-`--luna-model` (or ACLA_LUNA_MODEL for new actors) is an intentional override;
-never silently fall back to an OpenAI model if DeepSeek is unavailable.
+**Use Opus 5.5 with medium effort for new Claude Code actors.** Codex is an
+explicit alternate backend and uses the model selected by `--luna-model`, the
+private local config, or the Codex user's configured default. Provider-specific
+model names, router URLs, launcher paths, and capability exceptions belong in
+`~/.astra-critic-luna-actor/local.json` or the file named by `ACLA_LOCAL_CONFIG`.
+Never copy machine-specific routing details into this public repository. Missing
+provider configuration is a blocker; do not silently switch providers or models.
 
-For **Local model**, omit `--luna-effort`. The adapter does not map high/xhigh/max
-to upstream reasoning; an explicit effort flag is rejected. The launcher uses
-Codex catalog value `none` to override inherited GPT effort and reports
-`reasoning_effort_supported=false`, `reasoning_mode=upstream-default-unmapped`.
-This does not claim that the upstream model performs no reasoning.
-
-Resumes without an explicit model preserve the actor's saved model. Never silently
-convert an existing GPT conversation to DeepSeek: OpenAI encrypted compaction is
-not transferable. If migration is requested, Astra must prepare a new bounded
-handoff/task and reconcile outstanding inbox work before retiring the old actor.
-DeepSeek is text-only with a 65,536-token advertised context. Hosted tools and
-remote Responses compaction are unsupported; do not promise GPT feature parity.
+For models whose reasoning effort is not mapped by their provider, omit effort and
+report the provider default. `reasoning_effort_supported=false` means ACLA does not
+set a supported effort; it does not claim the model performs no reasoning.
 
 For explicitly selected GPT actors, reasoning effort has a floor of **high**. Astra chooses the effort when
 preparing the handoff: `high` for ordinary bounded implementation, `xhigh` for
@@ -210,9 +196,8 @@ When enabled, after implementation and before reporting to Astra, the executor
 creates exactly `n_reviewers` **native subagents of its executor backend**, never tmux/ACLA actors.
 Codex uses its native subagent tools; Claude Code uses its native Agent tool.
 They use the saved reviewer model and full-access/never-approval configuration.
-New Codex executors and their reviewers default to Local model; Claude Code
-executors default to Opus 5.5 and their reviewers to Sonnet. Do not select a
-GPT reviewer for a DeepSeek executor. `--reviewLoop false` explicitly opts out.
+Codex reviewers inherit their selected model; Claude Code executors default to
+Opus 5.5 and their reviewers to Sonnet. `--reviewLoop false` explicitly opts out.
 Use the default native agent role, not a restricted/custom review role. If native
 delegation or the required permission inheritance is unavailable, ask Astra;
 do not silently bypass the configured review. Limited slots allow sequential
@@ -352,5 +337,5 @@ on Opus 5.5 with medium effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and
 review prompt names the saved reviewer model. All reviewers still receive identical
 plan/worktree input and may only read and comment. `reviewLoop=false` disables it.
 Existing actors keep their saved policy (older rows inherit their executor model).
-Explicit Codex and DeepSeek-gateway actors retain their executor model for reviews;
-the DeepSeek gateway cannot serve Sonnet. Status reports the effective reviewer model.
+Explicit Codex and custom routed actors retain their executor model for reviews;
+any model-specific review limitations must be recorded in private local config. Status reports the effective reviewer model.

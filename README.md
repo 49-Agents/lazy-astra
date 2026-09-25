@@ -1,7 +1,7 @@
 # Astra Critic Luna Actor
 
 **New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one Sonnet reviewer.**
-Use `--executor-backend codex` to explicitly select Codex (DeepSeek by default).
+Use `--executor-backend codex` to select Codex with its configured model.
 Existing actors retain their saved backend, model and effort on resume.
 
 A standalone Codex plugin for an Astra critic and Opus 5.5 actors. Invoke the
@@ -27,26 +27,45 @@ credentials are needed. There is no terminal-paste delivery.
 
 - Python 3.10+, tmux, and an authenticated Codex CLI with `codex queue` support
   (developed against CLI 0.155.1).
-- Codex configured with the Local provider router and `local-model` model catalog,
-  or an explicitly selected alternative `--luna-model`.
+- A model configured in Codex, selected with `--luna-model`, or supplied through
+  a private local configuration file.
 - Astra and Codex actors must be reachable by the same host's Codex queue facility.
-- Claude Code actors additionally require an authenticated `claude` executable, or
-  the configured `claude-deepseek` gateway launcher for DeepSeek.
+- Claude Code actors additionally require an authenticated `claude` executable, or a provider-specific executable selected in local configuration.
   This version is not a cross-machine inbox service.
 
-New Codex actors default to `local-model` through the existing Codex router.
-Astra remains the critic; tmux, inbox, full access and review behavior stay the same.
-The historical Luna CLI names remain. Explicit `--luna-model` or ACLA_LUNA_MODEL
-for new actors can override the default. There is no silent model fallback.
-Existing actors retain their saved model on resume; changing the default does not
-migrate live GPT conversations or transfer encrypted compacted history.
+New Claude Code actors default to Opus 5.5 with medium effort. Codex actors use
+Codex's configured default model unless overridden by `--luna-model` or private
+local configuration. Astra remains the critic; inbox and review behavior is shared
+across both backends. Existing actors retain saved models on resume. There is no
+silent model or provider fallback.
 
-DeepSeek uses upstream reasoning defaults. Its current router does not map Codex
-reasoning effort: omit `--luna-effort` (explicit levels are rejected). The launcher
-pins the catalog value `none` and reports `reasoning_effort_supported=false` with
-`reasoning_mode=upstream-default-unmapped`; this is not a claim about the model's
-internal reasoning. Text only, advertised 65,536-token context; hosted tools and
-remote Responses compaction are not supported by the current adapter.
+Optional machine-specific model aliases, launchers, and capability overrides belong
+in the private local config, not this repository. Set `ACLA_LOCAL_CONFIG` to a JSON
+file, or use `~/.astra-critic-luna-actor/local.json`. Example:
+
+```json
+{
+  "defaults": {
+    "executor_backend": "claude-code",
+    "claude_model": "claude-opus-5-5",
+    "claude_effort": "medium",
+    "codex_model": "your-local-model"
+  },
+  "models": {
+    "your-local-model": {
+      "reasoning_effort_supported": false,
+      "reasoning_mode": "provider-default",
+      "reasoning_effort": "none",
+      "reviewer_model": "your-local-model",
+      "claude_command": "/path/to/local-launcher"
+    }
+  }
+}
+```
+
+Model option entries are optional. Omit a model-specific capability entry when
+normal Codex effort behavior applies. Keep local config and raw telemetry outside
+Git; the repository ignores common local config filenames.
 
 Every Codex actor launch and resume explicitly uses `service_tier="default"` (normal
 speed, not fast/priority), overriding inherited speed preferences.
@@ -80,14 +99,14 @@ other actions outside the assigned task.
 ## Executor backend
 
 New Claude Code actors default to `claude-opus-5-5` with medium effort.
-Codex retains DeepSeek. Explicit model/effort flags override these defaults;
+Codex uses its configured model. Explicit model/effort flags override these defaults;
 resumes preserve saved settings. Opus 5.5 requires Claude Code 2.1.280 or newer.
 
 Choose the CLI independently of the model:
 
 ```bash
 # Add to run-start; the remaining required arguments stay the same:
---executor-backend codex       # explicit DeepSeek/Codex option
+--executor-backend codex       # Codex configured model
 --executor-backend claude-code # default; defaults to Opus 5.5, medium effort
 # Native Claude instead, with existing authentication:
 --executor-backend claude-code --luna-model sonnet
@@ -108,8 +127,9 @@ Every Claude turn sets `bypassPermissions`, disables sandboxing and fast mode,
 and inherits the configured provider authentication. Native reviewers use Claude's
 Agent tool and use the saved reviewer model. `reviewLoop=true`, `n_reviewers=1`, the
 identical plan input and read/comment-only assignment remain unchanged. The gate
-is an instruction policy, not proof that the reviews occurred. DeepSeek effort
-remains unmapped; native Claude defaults to medium and accepts medium/high/xhigh/max effort subject
+is an instruction policy, not proof that the reviews occurred. Custom routed
+models may not map ACLA effort settings to provider-specific reasoning controls;
+native Claude defaults to medium and accepts medium/high/xhigh/max effort subject
 to its model support. No provider/model fallback is performed.
 
 Claude requires the default `--workspace-trust trusted`; noninteractive Claude
@@ -119,7 +139,7 @@ Managed policy still applies. The runner stops on failed turns/permission denial
 Inspect tmux output and the native transcript before explicitly resuming. Resumes
 request outstanding inbox work, without reissuing a completed initial handoff.
 The private `<state directory>/claude-runtime/<actor UUID>.jsonl` log retains
-stdout/stderr even if the tmux pane exits. History remains in Claude's configured directory (the DeepSeek wrapper has its own).
+stdout/stderr even if the tmux pane exits. History remains in Claude's configured directory.
 Use the returned `tmux_session` with `tmux -L acla attach -t SESSION` to watch JSON
 stream output; this pane is a runner, not an interactive Claude prompt.
 
@@ -179,8 +199,8 @@ by status. Omitted options retain saved settings on resume. Changing settings fo
 a live actor requires stop/resume; the helper does not silently interrupt it.
 
 The executor creates exactly that many native subagents of its selected backend, inheriting its
-model and full-access settings. New executors default to `local-model`, so
-their native reviewers use DeepSeek too. Use `--reviewLoop false` to opt out. Every reviewer gets the same complete current
+model and full-access settings. Codex actors inherit their selected model; Claude
+Code actors use Sonnet reviewers by default. Use `--reviewLoop false` to opt out. Every reviewer gets the same complete current
 Astra plan and worktree, with no conversation fork or specialized review areas.
 They only inspect whether the implementation matches the plan: omissions,
 discrepancies and unplanned additions. No code edits, file writes, tests/builds,
@@ -276,5 +296,5 @@ on Opus 5.5 with medium effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and
 review prompt names the saved reviewer model. All reviewers still receive identical
 plan/worktree input and may only read and comment. `reviewLoop=false` disables it.
 Existing actors keep their saved policy (older rows inherit their executor model).
-Explicit Codex and DeepSeek-gateway actors retain their executor model for reviews;
-the DeepSeek gateway cannot serve Sonnet. Status reports the effective reviewer model.
+Codex actors inherit their selected executor model for reviews. Status reports the
+effective reviewer model.

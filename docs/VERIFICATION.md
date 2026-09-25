@@ -1,4 +1,4 @@
-# Verification — 2026-09-23
+# Verification notes
 
 Runtime: Linux, Python 3, tmux, Codex CLI 0.155.1, GPT-6 Luna.
 
@@ -19,9 +19,8 @@ and an actual isolated tmux server with harmless processes. They cover:
 
 ## Live model acceptance
 
-Two GPT-6 Luna actors ran concurrently in separate disposable Git workspaces.
-Astra remained in the existing desktop Codex task, with no tmux destination.
-The run was `11111111-1111-4111-8111-111111111111`.
+Two CLI actors ran concurrently in disposable Git workspaces. Astra remained in
+the existing desktop task. Run, actor, and native thread identifiers are omitted.
 
 1. The launcher supplied each full handoff as the initial CLI prompt.
 2. Each actor bound its actual CODEX_THREAD_ID, wrote a small requested fixture,
@@ -42,11 +41,9 @@ The run was `11111111-1111-4111-8111-111111111111`.
    the plugin. All eight messages were accepted, the run became approved, and
    both actors stopped work without sending another report.
 
-Alpha retained Codex task `22222222-2222-4222-8222-222222222222` across restart;
-beta used `33333333-3333-4333-8333-333333333333`. The visible runtime showed
-`gpt-6-luna` for both. No external business platform resources were used. The acceptance actors and
-watcher were stopped afterward using their saved ownership identities; fixture
-state was retained for evidence. A watcher source upgrade was also exercised.
+Both actors retained their native conversations across restart. The visible
+runtime showed the selected model for both. Actors were stopped using their saved
+ownership identities. A watcher source upgrade was also exercised.
 
 ## Limits
 

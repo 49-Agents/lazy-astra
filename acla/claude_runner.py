@@ -63,12 +63,11 @@ def run(args):
                     prompt += '\n' + envelope(store, notification)
                 argv = shlex.split(luna['command']) + ['--permission-mode', 'bypassPermissions',
                         '--settings', json.dumps({'fastMode': False, 'fastModePerSessionOptIn': True,
-                                                  'sandbox': {'enabled': False},
-                                                  **({'alwaysThinkingEnabled': False} if luna['model'] == 'local-model' else {})}),
+                                                  'sandbox': {'enabled': False}}),
                         '--output-format', 'stream-json', '--verbose',
                         '--resume' if luna['claude_initialized'] else '--session-id', luna['claude_session_id'], '-p']
-                if luna['model'] != 'local-model':
-                    argv += ['--effort', luna['reasoning_effort'] or 'medium']
+                if luna['reasoning_effort']:
+                    argv += ['--effort', luna['reasoning_effort']]
                 # Use the saved reviewer model; migrated actors retain model inheritance.
                 env['CLAUDE_CODE_SUBAGENT_MODEL'] = luna['reviewer_model'] or luna['model']
                 env['CLAUDE_CODE_DISABLE_FAST_MODE'] = '1'
