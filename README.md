@@ -1,6 +1,6 @@
 # Astra Critic Luna Actor
 
-**New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one Sonnet reviewer.**
+**This machine's default ACLA loop: Claude Code Opus 5.5 builder, medium effort, then two parallel Sonnet reviewers.**
 Use `--executor-backend codex` to select Codex with its configured model.
 Existing actors retain their saved backend, model and effort on resume.
 
@@ -49,6 +49,9 @@ file, or use `~/.astra-critic-luna-actor/local.json`. Example:
     "executor_backend": "claude-code",
     "claude_model": "claude-opus-5-5",
     "claude_effort": "medium",
+    "reviewer_model": "sonnet",
+    "review_loop": true,
+    "n_reviewers": 2,
     "codex_model": "your-local-model"
   },
   "models": {
@@ -125,7 +128,7 @@ saved actor/session environment, within the existing same-OS-user trust boundary
 
 Every Claude turn sets `bypassPermissions`, disables sandboxing and fast mode,
 and inherits the configured provider authentication. Native reviewers use Claude's
-Agent tool and use the saved reviewer model. `reviewLoop=true`, `n_reviewers=1`, the
+Agent tool and use the saved reviewer model. `reviewLoop=true`, `n_reviewers=2`, the
 identical plan input and read/comment-only assignment remain unchanged. The gate
 is an instruction policy, not proof that the reviews occurred. Custom routed
 models may not map ACLA effort settings to provider-specific reasoning controls;
@@ -192,15 +195,16 @@ workstream is approved. Nothing is automatically merged or deployed.
 
 ## Optional native review loop
 
-Add `--reviewLoop true --n_reviewers 1` to `run-start` to enable review after
+Add `--reviewLoop true --n_reviewers 2` to `run-start` to enable review after
 implementation and before the executor reports to Astra. Defaults for new actors
-are `reviewLoop=true` and `n_reviewers=1`; both persist per actor and are reported
+are `reviewLoop=true` and `n_reviewers=2` on this machine; both persist per actor and are reported
 by status. Omitted options retain saved settings on resume. Changing settings for
 a live actor requires stop/resume; the helper does not silently interrupt it.
 
 The executor creates exactly that many native subagents of its selected backend, inheriting its
-model and full-access settings. Codex actors inherit their selected model; Claude
-Code actors use Sonnet reviewers by default. Use `--reviewLoop false` to opt out. Every reviewer gets the same complete current
+model and full-access settings. Claude Code actors use Sonnet reviewers by default.
+Launch the reviewers concurrently as one batch where the backend allows it. Use
+`--reviewLoop false` to opt out. Every reviewer gets the same complete current
 Astra plan and worktree, with no conversation fork or specialized review areas.
 They only inspect whether the implementation matches the plan: omissions,
 discrepancies and unplanned additions. No code edits, file writes, tests/builds,
@@ -290,8 +294,8 @@ latest end-to-end check.
 
 ### Reviewer model default
 
-New native Claude Code actors use one **Sonnet** reviewer (`reviewer_model=sonnet`)
-for one review batch per completed implementation/revision round. Execution stays
+New native Claude Code actors use two parallel **Sonnet** reviewers (`reviewer_model=sonnet`)
+in one review batch per completed implementation/revision round. Execution stays
 on Opus 5.5 with medium effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and the
 review prompt names the saved reviewer model. All reviewers still receive identical
 plan/worktree input and may only read and comment. `reviewLoop=false` disables it.

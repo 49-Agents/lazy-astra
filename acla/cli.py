@@ -125,7 +125,9 @@ def review_loop_policy(luna):
     policy = f'''reviewLoop=true; n_reviewers={luna['n_reviewers']}.
 This owner-authorized review gate applies to implementation assignments only.
 After you believe implementation is finished, BEFORE your completion report to
-Astra, spawn exactly {luna['n_reviewers']} independent native Codex subagents.
+Astra, spawn exactly {luna['n_reviewers']} independent native Codex subagents
+concurrently as one reviewer batch. Do not start one reviewer and wait before
+starting the other unless the backend's concurrency limit requires batching.
 Use the native spawn/wait/close subagent tools, NOT tmux, ACLA run-start, or another
 CLI worker. Use the default agent role, inherit your model and full-access/never
 approval settings, and do not request a restrictive sandbox. Do not fork your
@@ -285,6 +287,14 @@ def cmd_run_start(args):
                     raise ValueError('Stop the existing actor before changing reviewLoop or n_reviewers, then resume the same actor')
             config = local_config(store.path)
             defaults = config['defaults']
+            review_loop = (args.review_loop if args.review_loop is not None else
+                           (bool(existing['review_loop']) if existing else defaults.get('review_loop', True)))
+            n_reviewers = (args.n_reviewers if args.n_reviewers is not None else
+                           (existing['n_reviewers'] if existing else defaults.get('n_reviewers', 2)))
+            if type(review_loop) is not bool:
+                raise ValueError('Local config defaults.review_loop must be a boolean')
+            if type(n_reviewers) is not int or n_reviewers < 1:
+                raise ValueError('Local config defaults.n_reviewers must be a positive integer')
             backend = args.executor_backend or (existing['executor_backend'] if existing else defaults.get('executor_backend', DEFAULT_BACKEND))
             if backend == 'claude-code' and args.workspace_trust != 'trusted':
                 raise ValueError('Claude noninteractive actors require --workspace-trust trusted')
@@ -325,7 +335,7 @@ def cmd_run_start(args):
                 luna_name=args.luna_name, luna_id=luna_id, luna_workspace=workspace,
                 luna_session=session, luna_socket=DEFAULT_SOCKET, luna_command=command,
                 luna_model=model, handoff=handoff,
-                review_loop=args.review_loop, n_reviewers=args.n_reviewers, executor_backend=backend, reviewer_model=reviewer_model,
+                review_loop=review_loop, n_reviewers=n_reviewers, executor_backend=backend, reviewer_model=reviewer_model,
                 reasoning_effort_supported=effort_supported,
                 reasoning_mode=model_options.get('reasoning_mode') or ('claude-effort' if backend == 'claude-code' else ('codex-effort' if effort_supported else 'model-default-unmapped')))
             luna = store.agent(result['luna_id'])
@@ -634,9 +644,9 @@ def build_parser():
                        help='Claude accepts medium/high/xhigh/max; Codex support and defaults follow the selected model configuration')
     start.add_argument('--interval', type=int, default=300)
     start.add_argument('--reviewLoop', '--review-loop', dest='review_loop', type=boolean,
-                       help='true/false: native plan-conformance review gate (new actors default true)')
+                       help='true/false: native plan-conformance review gate (default from local config; otherwise true)')
     start.add_argument('--n_reviewers', '--n-reviewers', dest='n_reviewers', type=positive_integer,
-                       help='Number of identical independent native reviews (new actors default 1)')
+                       help='Number of identical independent native reviews (default from local config; otherwise 2)')
     start.add_argument('--workspace-trust', choices=('trusted', 'configured'), default='trusted',
                        help='Trust the selected actor workspace for this launch (default), '
                             'or use existing Codex trust configuration and prompts')

@@ -5,9 +5,18 @@ description: "Invoke when the user says 'run the astra critic luna actor' or exp
 
 # Astra Critic Luna Actor
 
-**New actor default: Claude Code, `claude-opus-5-5`, medium effort, one self-review round with one Sonnet reviewer.**
+**This machine's default ACLA loop: Opus 5.5 builder, then two Sonnet reviewers in parallel.**
 Use `--executor-backend codex` to select Codex with its configured model.
 Existing actors retain their saved backend, model and effort on resume.
+
+When the user says **"run default ACLA loop for this task"** (or asks to run
+default ACLA), interpret it exactly as: launch a Claude Code Luna using Opus 5.5
+at medium effort; enable ACLA's native review gate; launch exactly two native
+Sonnet reviewer subagents concurrently after implementation; have them inspect
+the same plan and worktree and report only to Luna. Luna must verify each finding,
+apply only confirmed in-plan fixes, and then send one final report to Astra. This
+is ACLA's configured subagent review workflow, not a request for Luna to perform a
+manual self-review. Reviewers are read/comment-only and do not edit code.
 
 The secret phrase is **run the astra critic luna actor**, ignoring case and hyphens.
 This is a standalone plugin. It needs Python 3.10+, tmux, a signed-in Codex CLI
@@ -185,9 +194,9 @@ after one restart with the updated launcher, report the exact blocker.
 
 ### Optional executor review loop
 
-`run-start --reviewLoop true --n_reviewers 1` enables the executor's native
+`run-start --reviewLoop true --n_reviewers 2` enables the executor's native
 review loop. `reviewLoop` is a boolean (new-actor default **true**);
-`n_reviewers` is a positive integer (default **1**). Both are saved per actor,
+`n_reviewers` is a positive integer (this machine's default **2**). Both are saved per actor,
 shown by run-start/status, and preserved when omitted on resume. The equivalent
 kebab-case flags are `--review-loop` and `--n-reviewers`. Stop/resume the same
 actor before changing these settings for an existing live terminal.
@@ -196,8 +205,9 @@ When enabled, after implementation and before reporting to Astra, the executor
 creates exactly `n_reviewers` **native subagents of its executor backend**, never tmux/ACLA actors.
 Codex uses its native subagent tools; Claude Code uses its native Agent tool.
 They use the saved reviewer model and full-access/never-approval configuration.
-Codex reviewers inherit their selected model; Claude Code executors default to
-Opus 5.5 and their reviewers to Sonnet. `--reviewLoop false` explicitly opts out.
+Start all reviewers concurrently in one batch when the backend allows it. On this
+machine, Claude Code executors use Opus 5.5 and two Sonnet reviewers by default.
+`--reviewLoop false` explicitly opts out.
 Use the default native agent role, not a restricted/custom review role. If native
 delegation or the required permission inheritance is unavailable, ask Astra;
 do not silently bypass the configured review. Limited slots allow sequential
@@ -228,7 +238,8 @@ when one is needed. Inspect the final diff after fixes, then send the ordinary
 single completion report to Astra, including reviewer IDs, accepted/rejected
 findings with reasons, fixes and unresolved questions. Do not send interim reviews.
 
-One reviewer batch per completed implementation/revision round. Do not repeat
+One batch of two parallel reviewers per completed implementation/revision round
+on this machine. Do not repeat
 until consensus or apply the loop to exploration-only/review-only actors or the
 reviewers themselves. Failed/missing reviewer replies are not clean reviews.
 These are instructions for the native agent workflow, not a separate tmux review
@@ -331,8 +342,8 @@ that actor's saved backend identity; bootstrap gives the actor their exact use.
 
 ### Reviewer model default
 
-New native Claude Code actors use one **Sonnet** reviewer (`reviewer_model=sonnet`)
-for one review batch per completed implementation/revision round. Execution stays
+New native Claude Code actors use two parallel **Sonnet** reviewers (`reviewer_model=sonnet`)
+in one review batch per completed implementation/revision round. Execution stays
 on Opus 5.5 with medium effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and the
 review prompt names the saved reviewer model. All reviewers still receive identical
 plan/worktree input and may only read and comment. `reviewLoop=false` disables it.
