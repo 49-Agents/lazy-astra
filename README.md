@@ -127,6 +127,20 @@ executable, not a shell command). Backend, executable, model and session are sav
 resumes retain them. Existing actors stay Codex. Backend changes require a new
 actor, with outstanding work reconciled by Manager.
 
+To repair a saved launcher, the bound Manager first stops the Worker, then runs:
+
+```sh
+python3 acla_cli.py set-worker-launcher --worker-id WORKER_ID --claude-command /absolute/path/to/claude
+```
+
+Then repeat the original `run-start` command to resume. This changes only the saved
+executable; it preserves the model, arguments, plan, inbox, and native session ID.
+It rejects live Workers, active runners, other Managers, and non-Claude Workers.
+Normal `run-start` identity checks remain strict. Updating defaults only affects new
+Workers. If the old launcher used a separate Claude configuration directory, ensure
+the replacement can access the existing native session before resuming. This command
+does not copy transcripts, reset conversation state, launch a Worker, or send messages.
+
 Claude turns run serially inside tmux using `claude -p --session-id UUID`, then
 `--resume UUID`. The runner polls SQLite every two seconds when idle, without
 model calls for empty polls. Manager receives replies through the existing shared

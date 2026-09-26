@@ -634,6 +634,37 @@ def cmd_resolve(args):
         store.close()
 
 
+def cmd_set_worker_launcher(args):
+    """Change only a stopped Claude Worker's executable, preserving its identity."""
+    store = Store(args.state)
+    try:
+        with state_lock(store, 'startup'), state_lock(store, 'claude-' + args.luna_id, blocking=False):
+            thread = store.thread_for_luna(args.luna_id)
+            require_astra(store, thread['id'])
+            luna = store.agent(args.luna_id)
+            if luna['executor_backend'] != 'claude-code':
+                raise ValueError('Launcher changes require a Claude Code Worker')
+            if alive(luna['tmux_session'], luna['tmux_socket']):
+                raise ValueError('Stop the Worker before changing its launcher')
+            executable = shutil.which(args.claude_command)
+            if not executable:
+                raise ValueError('Claude executable unavailable; provide --claude-command PATH')
+            argv = shlex.split(luna['command'])
+            command = shlex.join([executable, *argv[1:]])
+            with store.db:
+                changed = store.db.execute('UPDATE agents SET command=? WHERE id=? AND command=?',
+                                           (command, luna['id'], luna['command'])).rowcount
+                if changed != 1:
+                    raise ValueError('Worker command changed concurrently; inspect and retry')
+            output({'worker_id': luna['id'], 'previous_command': luna['command'],
+                    'command': command, 'state': 'stopped', 'conversation_retained': True,
+                    'claude_session_id': luna['claude_session_id'],
+                    'session_requirement': 'The new launcher must be able to access the saved Claude session before resume.'
+                                           if luna['claude_initialized'] else None})
+    finally:
+        store.close()
+
+
 def cmd_stop_actor(args):
     store = Store(args.state)
     try:
@@ -712,6 +743,9 @@ def build_parser():
     c = command('resolve-delivery', cmd_resolve); c.add_argument('--message-id', type=int, required=True)
     choice = c.add_mutually_exclusive_group(required=True)
     choice.add_argument('--retry', action='store_true'); choice.add_argument('--delivered', action='store_true')
+    c = command('set-worker-launcher', cmd_set_worker_launcher)
+    role_argument(c, '--worker-id', '--luna-id', dest='luna_id', required=True, metavar='WORKER_ID')
+    c.add_argument('--claude-command', required=True, help='Replacement executable for a stopped Claude Code Worker')
     c = command('stop-actor', cmd_stop_actor); role_argument(c, '--worker-id', '--luna-id', dest='luna_id', required=True, metavar='WORKER_ID')
     return p
 

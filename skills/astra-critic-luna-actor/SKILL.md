@@ -29,6 +29,20 @@ explicitly authorizes sending the handoff, questions, reports, and review feedba
 between the roles. Repository, merge, and deployment authority
 still comes from the user's request and repository instructions.
 
+## Manager execution boundary — mandatory
+
+When the user says `ACLA`, `/ACLA`, or “run default ACLA loop for this task”,
+Manager writes the plan and hands implementation to the default ACLA Worker.
+After dispatch, wait for the Worker's completion report through the inbox.
+Do not implement the same assignment alongside the Worker, edit its worktree,
+or review its unfinished changes while it is working. You may do unrelated work
+that does not overlap its assignment. Answer blocker questions and supply missing
+planning decisions when notified; do not take over the implementation.
+Once the Worker reports completion, review the completed work against the plan.
+Send actionable feedback through ACLA, let the Worker finish the revisions, then
+review its next completion report. Repeat until approved. Use completion/blocker
+notifications; do not repeatedly inspect work in progress as an informal review.
+
 ## Subagent role boundary — mandatory
 
 **Subagents may explore, implement, and review. They must never plan or design.**
@@ -351,3 +365,19 @@ plan/worktree input and may only read and comment. `reviewLoop=false` disables i
 Existing actors keep their saved policy (older rows inherit their executor model).
 Explicit Codex and custom routed actors retain their executor model for reviews;
 any model-specific review limitations must be recorded in private local config. Status reports the effective reviewer model.
+
+## Repair a stopped Worker's Claude launcher
+
+A changed machine default does not update saved Workers. If resuming with a new
+`--claude-command` fails with “different destination command”, the bound Manager
+must use the supported update command after stopping the Worker:
+
+```bash
+python3 /absolute/plugin/acla_cli.py set-worker-launcher --worker-id '<saved Worker UUID>' --claude-command '/absolute/path/to/claude'
+```
+
+This preserves the model, handoff, inbox and session; it does not launch or message
+the Worker. Repeat the saved `run-start` afterward. If the previous launcher used
+a different Claude configuration directory, first ensure the replacement can
+access the saved native session. Never reset session identity or edit SQLite to
+bypass this check.

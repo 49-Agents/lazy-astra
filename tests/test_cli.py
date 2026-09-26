@@ -79,6 +79,55 @@ class CliWorkflowTests(unittest.TestCase):
     def store(self):
         return Store(self.state)
 
+    def test_stopped_worker_launcher_update_preserves_identity_and_resumes(self):
+        args = ('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                '--workspace', str(self.workspace_one), '--luna-name', 'claude',
+                '--handoff-file', str(self.handoff), '--executor-backend', 'claude-code')
+        with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x.rsplit('/', 1)[-1]):
+            actor = self.invoke(*args, '--claude-command', 'old-claude')
+            store = self.store()
+            store.db.execute('UPDATE agents SET claude_initialized=1 WHERE id=?', (actor['luna_id'],))
+            store.db.commit()
+            before = dict(store.agent(actor['luna_id']))
+            self.invoke_fails(*args, '--claude-command', 'claude', contains='different destination command')
+            update = ('set-worker-launcher', '--worker-id', actor['luna_id'], '--claude-command', 'claude')
+            result = self.invoke(*update)
+            after = dict(store.agent(actor['luna_id']))
+            self.assertEqual(after.pop('command'), '/usr/bin/claude --model claude-opus-5-5')
+            before.pop('command')
+            self.assertEqual(after, before)
+            self.assertTrue(result['session_requirement'])
+            self.assertEqual(self.invoke(*update)['command'], result['command'])
+            resumed = self.invoke(*args)
+            self.assertEqual(resumed['luna_id'], actor['luna_id'])
+            self.assertEqual(resumed['claude_session_id'], actor['claude_session_id'])
+            store.close()
+
+    def test_launcher_update_rejects_running_wrong_manager_and_missing_binary(self):
+        with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x):
+            actor = self.invoke('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                                '--workspace', self.workspace_one, '--luna-name', 'claude',
+                                '--handoff-file', self.handoff, '--executor-backend', 'claude-code')
+            args = ('set-worker-launcher', '--worker-id', actor['luna_id'], '--claude-command', 'replacement')
+            store = self.store()
+            before = dict(store.agent(actor['luna_id']))
+            with mock.patch('acla.cli.alive', return_value=True):
+                self.invoke_fails(*args, contains='Stop the Worker')
+            with cli.state_lock(store, 'claude-' + actor['luna_id']):
+                self.invoke_fails(*args, contains='owns this state store')
+            with mock.patch.dict(os.environ, {'CODEX_THREAD_ID': self.luna_one_thread}):
+                self.invoke_fails(*args, contains='not the Manager')
+            with mock.patch('acla.cli.shutil.which', return_value=None):
+                self.invoke_fails(*args, contains='executable unavailable')
+            self.assertEqual(dict(store.agent(actor['luna_id'])), before)
+            store.close()
+
+    def test_launcher_update_rejects_codex(self):
+        with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', return_value='/usr/bin/codex'):
+            actor = self.start_actor()
+            self.invoke_fails('set-worker-launcher', '--worker-id', actor['luna_id'],
+                              '--claude-command', 'claude', contains='Claude Code Worker')
+
     def test_new_actor_defaults_to_claude_opus_medium(self):
         with mock.patch('acla.cli.DEFAULT_BACKEND', 'claude-code'), mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x):
             result = self.start_actor()
@@ -86,7 +135,7 @@ class CliWorkflowTests(unittest.TestCase):
         self.assertEqual(result['luna_model'], 'claude-opus-5-5')
         self.assertEqual(result['luna_launch_effort'], 'medium')
         self.assertTrue(result['reviewLoop'])
-        self.assertEqual(result['n_reviewers'], 1)
+        self.assertEqual(result['n_reviewers'], 2)
 
     def test_claude_defaults_and_identity_are_retained(self):
         args = ('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
@@ -137,7 +186,7 @@ class CliWorkflowTests(unittest.TestCase):
         self.invoke_fails('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
                          '--workspace', self.workspace_one, '--luna-name', 'gpt',
                          '--handoff-file', self.handoff, '--luna-model', 'gpt-6-luna',
-                         '--luna-effort', 'medium', contains='high, xhigh, or max')
+                         '--luna-effort', 'medium', contains='high/xhigh/max for supported Codex models')
 
     def test_run_start_uses_local_codex_default_and_handoff(self):
         result = self.start_actor()
@@ -153,7 +202,7 @@ class CliWorkflowTests(unittest.TestCase):
         self.assertIn("never", argv)
         self.assertIn("--add-dir", argv)
         prompt = argv[-1]
-        self.assertIn("bind-session --luna-id " + result["luna_id"], prompt)
+        self.assertIn("bind-session --worker-id " + result["luna_id"], prompt)
         self.assertIn("Implement the parser", prompt)
         self.assertNotIn(self.astra_thread, prompt)
         self.assertEqual(self.mock_launch.call_args.kwargs["env"]["CODEX_HOME"], str(self.codex_home.resolve()))
