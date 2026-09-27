@@ -33,7 +33,16 @@ still comes from the user's request and repository instructions.
 
 When the user says `ACLA`, `/ACLA`, or “run default ACLA loop for this task”,
 Manager writes the plan and hands implementation to the default ACLA Worker.
-After dispatch, wait for the Worker's completion report through the inbox.
+After dispatch, send one brief handoff confirmation and **END YOUR TURN**.
+Waiting is asynchronous: the background watcher notifies Manager when a Worker
+reports completion or asks a blocker question. Do not remain active to wait,
+repeatedly call `inbox next` or `status`, sleep in a loop, or narrate unchanged
+progress. Do not speculate about why work is taking time. After sending review
+feedback or answering a blocker, end the turn again while Worker continues.
+Resume on an inbox notification or an explicit user request. A user-requested
+status check permits one bounded check, not an ongoing monitoring loop.
+If the user says “handoff and stop”, end immediately without another tool call;
+leave Worker running unless the user specifically asks to stop that Worker.
 Do not implement the same assignment alongside the Worker, edit its worktree,
 or review its unfinished changes while it is working. You may do unrelated work
 that does not overlap its assignment. Answer blocker questions and supply missing
@@ -101,9 +110,11 @@ If that environment variable is absent, use a known exact task UUID through
    The launcher selects Claude Code with Opus 5.5 at medium effort, supplies the complete handoff in the initial
    CLI prompt, and starts one watcher. It returns the run, actor, review-thread,
    and tmux identities. Save them. `awaiting_actor_binding` means the process
-   started but has not yet registered its actual Codex conversation. Check status;
+   started but has not yet registered its actual Codex conversation. At most one
+   immediate status check may clarify launch state; do not poll until binding;
    login, hook trust, or model errors may require opening the returned terminal.
-   Do not claim the actor is ready before it binds.
+   Do not claim the actor is ready before it binds. Report “launched; binding
+   pending” if needed and end the turn. Investigate concrete launch errors only.
 4. For another workstream, use the same run ID/goal with a different name,
    worktree, and handoff file. `--worker-model` selects an explicitly requested
    alternative. `--interval` changes the shared state store's polling interval;
@@ -221,7 +232,10 @@ Codex uses its native subagent tools; Claude Code uses its native Agent tool.
 They use the saved reviewer model and full-access/never-approval configuration.
 Start all reviewers concurrently in one batch when the backend allows it. On this
 machine, Claude Code executors use Opus 5.5 and two Sonnet reviewers by default.
-`--reviewLoop false` explicitly opts out.
+`--reviewLoop false` explicitly opts out. Use it when the user requests ACLA
+“without review” or “without self-review”. This does not change the handoff/yield
+rule: end the turn after dispatch. Honor an explicit request to skip Manager
+review too; do not substitute active monitoring for disabled reviews.
 Use the default native agent role, not a restricted/custom review role. If native
 delegation or the required permission inheritance is unavailable, ask Manager;
 do not silently bypass the configured review. Limited slots allow sequential
@@ -281,7 +295,10 @@ The command returns full messages and an expiring claim token, bound to the curr
 native Codex thread and home. Process only returned IDs and acknowledge exactly the
 IDs processed with `inbox acknowledge --token TOKEN --message-id ID`. Save the token
 and IDs before lengthy work. After acknowledging each processed batch, continue
-calling `inbox next` until it returns empty. The default
+calling `inbox next` until it returns empty. This is a bounded drain of messages
+already available in a notification-triggered turn, not periodic polling for
+future work. Once empty, end the turn immediately; do not sleep and pull again.
+An empty inbox alone is not a reason to send a waiting/status message. The default
 batch is 20 (maximum 100); claims expire after 15 minutes. An empty inbox or delayed
 duplicate wake-up requires no chat response and no actor message. Do not act on a
 delayed full envelope from an older workflow until reconciling its message ID with
