@@ -1,6 +1,6 @@
 # ACLA
 
-**This machine's default ACLA loop: Claude Code Opus 5.5 builder, medium effort, then two parallel Sonnet reviewers.**
+**This machine's default ACLA loop: Claude Code Sonnet 5.5 builder, xhigh effort, then two parallel Sonnet reviewers.**
 Use `--executor-backend codex` to select Codex with its configured model.
 Existing actors retain their saved backend, model and effort on resume.
 
@@ -36,7 +36,7 @@ credentials are needed. There is no terminal-paste delivery.
 - Claude Code actors additionally require an authenticated `claude` executable, or a provider-specific executable selected in local configuration.
   This version is not a cross-machine inbox service.
 
-New Claude Code actors default to Opus 5.5 with medium effort. Codex actors use
+New Claude Code actors default to Sonnet 5.5 with xhigh effort. Codex actors use
 Codex's configured default model unless overridden by `--worker-model` or private
 local configuration. Manager owns planning and approval; inbox and review behavior
 is shared across both backends. Existing actors retain saved models on resume. There is no
@@ -54,8 +54,8 @@ file, or use `~/.astra-critic-luna-actor/local.json`. Example:
 {
   "defaults": {
     "executor_backend": "claude-code",
-    "claude_model": "claude-opus-5-5",
-    "claude_effort": "medium",
+    "claude_model": "claude-sonnet-5-5",
+    "claude_effort": "xhigh",
     "reviewer_model": "sonnet",
     "review_loop": true,
     "n_reviewers": 2,
@@ -81,8 +81,8 @@ Every Codex actor launch and resume explicitly uses `service_tier="default"` (no
 speed, not fast/priority), overriding inherited speed preferences.
 
 For explicitly selected GPT actors, reasoning effort defaults to **high**, pinned with `model_reasoning_effort` on
-launch and resume. Manager may choose `run-start --worker-effort xhigh` for complex
-work/long plans, or `--worker-effort max` for the hardest assignments. Only high,
+launch and resume. Preserve the configured effort; only change it on an explicit
+owner request, never based on task complexity or plan length. Only high,
 xhigh and max are accepted. Omitting the flag preserves an actor's saved effort
 on resume; older actors without a saved effort default to high.
 Already-running terminals require controlled stop/resume to adopt a change:
@@ -108,16 +108,16 @@ other actions outside the assigned task.
 
 ## Executor backend
 
-New Claude Code actors default to `claude-opus-5-5` with medium effort.
+New Claude Code actors default to `claude-sonnet-5-5` with xhigh effort.
 Codex uses its configured model. Explicit model/effort flags override these defaults;
-resumes preserve saved settings. Opus 5.5 requires Claude Code 2.1.280 or newer.
+resumes preserve saved settings. Sonnet 5.5 requires Claude Code 2.1.284 or newer.
 
 Choose the CLI independently of the model:
 
 ```bash
 # Add to run-start; the remaining required arguments stay the same:
 --executor-backend codex       # Codex configured model
---executor-backend claude-code # default; defaults to Opus 5.5, medium effort
+--executor-backend claude-code # default; defaults to Sonnet 5.5, xhigh effort
 # Native Claude instead, with existing authentication:
 --executor-backend claude-code --worker-model sonnet
 ```
@@ -153,7 +153,7 @@ Agent tool and use the saved reviewer model. `reviewLoop=true`, `n_reviewers=2`,
 identical plan input and read/comment-only assignment remain unchanged. The gate
 is an instruction policy, not proof that the reviews occurred. Custom routed
 models may not map ACLA effort settings to provider-specific reasoning controls;
-native Claude defaults to medium and accepts medium/high/xhigh/max effort subject
+native Claude defaults to xhigh and accepts medium/high/xhigh/max effort subject
 to its model support. No provider/model fallback is performed.
 
 Claude requires the default `--workspace-trust trusted`; noninteractive Claude
@@ -318,7 +318,7 @@ latest end-to-end check.
 
 New native Claude Code actors use two parallel **Sonnet** reviewers (`reviewer_model=sonnet`)
 in one review batch per completed implementation/revision round. Execution stays
-on Opus 5.5 with medium effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and the
+on Sonnet 5.5 with xhigh effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and the
 review prompt names the saved reviewer model. All reviewers still receive identical
 plan/worktree input and may only read and comment. `reviewLoop=false` disables it.
 Existing actors keep their saved policy (older rows inherit their executor model).

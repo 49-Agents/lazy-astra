@@ -7,7 +7,9 @@ description: "Use when the user invokes ACLA, /ACLA, or asks to run the default 
 
 Read and follow [the ACLA workflow](../astra-critic-luna-actor/SKILL.md) from this
 same plugin before launching work. Use its configured default Worker and internal
-reviewers unless the user overrides them.
+reviewers unless the user overrides them. The default builder is Sonnet 5.5 at
+fixed xhigh effort. Do not adjust effort based on task complexity or plan length;
+only an explicit owner request authorizes changing it.
 
 You are Manager: write the plan, then dispatch it through ACLA. After launch,
 send one brief handoff confirmation and END YOUR TURN. The background watcher

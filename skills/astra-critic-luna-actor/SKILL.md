@@ -5,13 +5,13 @@ description: "Invoke when the user says 'run default ACLA loop for this task' or
 
 # ACLA Manager–Worker Workflow
 
-**This machine's default ACLA loop: Opus 5.5 builder, then two Sonnet reviewers in parallel.**
+**This machine's default ACLA loop: Sonnet 5.5 builder, then two Sonnet reviewers in parallel.**
 Use `--executor-backend codex` to select Codex with its configured model.
 Existing actors retain their saved backend, model and effort on resume.
 
 When the user says **"run default ACLA loop for this task"** (or asks to run
-default ACLA), interpret it exactly as: launch a Claude Code Worker using Opus 5.5
-at medium effort; enable ACLA's native review gate; launch exactly two native
+default ACLA), interpret it exactly as: launch a Claude Code Worker using Sonnet 5.5
+at xhigh effort; enable ACLA's native review gate; launch exactly two native
 Sonnet reviewer subagents concurrently after implementation; have them inspect
 the same plan and worktree and report only to Worker. Worker must verify each finding,
 apply only confirmed in-plan fixes, and then send one final report to Manager. This
@@ -20,7 +20,7 @@ manual self-review. Reviewers are read/comment-only and do not edit code.
 
 The default invocation phrase is **run default ACLA loop for this task**.
 This is a standalone plugin. It needs Python 3.10+, tmux, a signed-in Codex CLI
-with `codex queue`, and the requested model (default `claude-opus-5-5`). No external business platform
+with `codex queue`, and the requested model (default `claude-sonnet-5-5`). No external business platform
 service, business identity, or API key setup is involved.
 
 Act as Manager in this existing Codex task. Do not start another Manager task.
@@ -107,7 +107,7 @@ If that environment variable is absent, use a known exact task UUID through
      --handoff-file '/absolute/handoff.md' --interval 300
    ```
 
-   The launcher selects Claude Code with Opus 5.5 at medium effort, supplies the complete handoff in the initial
+   The launcher selects Claude Code with Sonnet 5.5 at xhigh effort, supplies the complete handoff in the initial
    CLI prompt, and starts one watcher. It returns the run, actor, review-thread,
    and tmux identities. Save them. `awaiting_actor_binding` means the process
    started but has not yet registered its actual Codex conversation. At most one
@@ -125,11 +125,11 @@ If that environment variable is absent, use a known exact task UUID through
 `--executor-backend codex|claude-code` selects the CLI harness independently of
 `--worker-model`. New Codex actors use the Codex-configured model unless local config
 or `--worker-model` selects another. New Claude Code actors default to
-`claude-opus-5-5` with `--worker-effort medium`. Saved backend,
+`claude-sonnet-5-5` with `--worker-effort xhigh`. Saved backend,
 model, executable and native session identity are retained on resume; switching
 backends requires a new actor and a reconciled handoff, never conversion in place.
 
-For Claude Code, add `--executor-backend claude-code` (Opus 5.5, medium effort).
+For Claude Code, add `--executor-backend claude-code` (Sonnet 5.5, xhigh effort).
 `--claude-command /absolute/executable` overrides the configured Claude executable.
 A native Claude model can be explicitly selected with `--worker-model sonnet` and
 uses `claude` by default. Never silently fall back to a different model/provider.
@@ -160,7 +160,7 @@ Claude session history stays in the launcher's configured Claude directory.
 
 ### Model speed, permissions, and workspace trust
 
-**Use Opus 5.5 with medium effort for new Claude Code actors.** Codex is an
+**Use Sonnet 5.5 with xhigh effort for new Claude Code actors.** Codex is an
 explicit alternate backend and uses the model selected by `--worker-model`, the
 private local config, or the Codex user's configured default. Provider-specific
 model names, router URLs, launcher paths, and capability exceptions belong in
@@ -172,11 +172,10 @@ For models whose reasoning effort is not mapped by their provider, omit effort a
 report the provider default. `reasoning_effort_supported=false` means ACLA does not
 set a supported effort; it does not claim the model performs no reasoning.
 
-For explicitly selected GPT actors, reasoning effort has a floor of **high**. Manager chooses the effort when
-preparing the handoff: `high` for ordinary bounded implementation, `xhigh` for
-complex multi-step work or long plans, and `max` for the hardest reasoning-heavy
-assignments. Pass `--worker-effort high|xhigh|max` to `run-start`. Never select low
-or medium. Plan length is a signal; consider dependencies and ambiguity too.
+Keep the configured effort fixed. Manager and Workers must not raise or lower it
+based on task complexity, plan length, or their own judgment. Only an explicit
+owner request authorizes an effort override. New Claude Workers default to xhigh.
+For explicitly selected GPT actors, retain the configured effort (minimum high).
 The launcher pins `model_reasoning_effort` on both launch and resume. New GPT actors
 default to high; omitting the flag on resume preserves the last saved launch
 effort, including xhigh/max. Normal service speed remains mandatory at all levels.
@@ -231,7 +230,7 @@ creates exactly `n_reviewers` **native subagents of its executor backend**, neve
 Codex uses its native subagent tools; Claude Code uses its native Agent tool.
 They use the saved reviewer model and full-access/never-approval configuration.
 Start all reviewers concurrently in one batch when the backend allows it. On this
-machine, Claude Code executors use Opus 5.5 and two Sonnet reviewers by default.
+machine, Claude Code executors use Sonnet 5.5 and two Sonnet reviewers by default.
 `--reviewLoop false` explicitly opts out. Use it when the user requests ACLA
 “without review” or “without self-review”. This does not change the handoff/yield
 rule: end the turn after dispatch. Honor an explicit request to skip Manager
@@ -376,7 +375,7 @@ that actor's saved backend identity; bootstrap gives the actor their exact use.
 
 New native Claude Code actors use two parallel **Sonnet** reviewers (`reviewer_model=sonnet`)
 in one review batch per completed implementation/revision round. Execution stays
-on Opus 5.5 with medium effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and the
+on Sonnet 5.5 with xhigh effort. The runner pins `CLAUDE_CODE_SUBAGENT_MODEL` and the
 review prompt names the saved reviewer model. All reviewers still receive identical
 plan/worktree input and may only read and comment. `reviewLoop=false` disables it.
 Existing actors keep their saved policy (older rows inherit their executor model).

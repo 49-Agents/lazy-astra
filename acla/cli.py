@@ -20,7 +20,7 @@ from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BACKEND = 'claude-code'
-DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5'
+DEFAULT_CLAUDE_MODEL = 'claude-sonnet-5-5'
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
 LUNA_REPORTING_POLICY = '''Worker communication and decision policy:
 ALLOWED SUBAGENT ROLES: exploration, implementation, and review only.
@@ -34,7 +34,7 @@ reviewing an existing plan/design never authorizes writing a replacement.
 If asked to plan or design, or if a missing decision blocks the assignment, use
 ask-question to request Manager's decision and pause affected work. Do not relabel
 planning as exploration/review or delegate it to another subagent.
-Claude Code defaults to Opus 5.5 with medium effort. Preserve the configured effort.
+Claude Code defaults to Sonnet 5.5 with xhigh effort. Preserve the configured effort. Never adjust it based on task complexity or plan length; only an explicit owner request may change it.
 For models with configured reasoning-effort support, follow the selected
 backend’s effort options. If effort mapping is unknown, omit the flag and report
 that the provider uses its own default.
@@ -333,7 +333,7 @@ def cmd_run_start(args):
                     raise ValueError('This model is configured without ACLA reasoning-effort support')
                 effort = existing['reasoning_effort'] if existing else model_options.get('reasoning_effort')
             else:
-                effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or defaults.get('claude_effort' if backend == 'claude-code' else 'codex_effort') or ('medium' if backend == 'claude-code' else 'high')
+                effort = args.luna_effort or (existing['reasoning_effort'] if existing else None) or defaults.get('claude_effort' if backend == 'claude-code' else 'codex_effort') or ('xhigh' if backend == 'claude-code' else 'high')
                 allowed_efforts = ('medium', *LUNA_EFFORTS) if backend == 'claude-code' else LUNA_EFFORTS
                 if effort not in allowed_efforts:
                     raise ValueError('Effort must be medium/high/xhigh/max for Claude Code or high/xhigh/max for supported Codex models')
@@ -702,7 +702,7 @@ def build_parser():
                   metavar='MANAGER_THREAD', help='Exact Manager Codex thread UUID')
     start.add_argument('--executor-backend', choices=('codex', 'claude-code'), help='New Workers default to claude-code; resumes retain their backend')
     start.add_argument('--claude-command', help='Claude executable path; defaults to the local model configuration or claude')
-    role_argument(start, '--worker-model', '--luna-model', dest='luna_model', metavar='WORKER_MODEL', help='Codex uses its configured default; Claude Code defaults to claude-opus-5-5; resumes preserve saved model')
+    role_argument(start, '--worker-model', '--luna-model', dest='luna_model', metavar='WORKER_MODEL', help='Codex uses its configured default; Claude Code defaults to claude-sonnet-5-5; resumes preserve saved model')
     role_argument(start, '--worker-effort', '--luna-effort', dest='luna_effort', metavar='WORKER_EFFORT', choices=('medium', *LUNA_EFFORTS),
                        help='Claude accepts medium/high/xhigh/max; Codex support and defaults follow the selected model configuration')
     start.add_argument('--interval', type=int, default=300)

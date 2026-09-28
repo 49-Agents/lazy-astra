@@ -68,6 +68,7 @@ def run(args):
                         '--resume' if luna['claude_initialized'] else '--session-id', luna['claude_session_id'], '-p']
                 if luna['reasoning_effort']:
                     argv += ['--effort', luna['reasoning_effort']]
+                    env['CLAUDE_CODE_EFFORT_LEVEL'] = luna['reasoning_effort']
                 # Use the saved reviewer model; migrated actors retain model inheritance.
                 env['CLAUDE_CODE_SUBAGENT_MODEL'] = luna['reviewer_model'] or luna['model']
                 env['CLAUDE_CODE_DISABLE_FAST_MODE'] = '1'

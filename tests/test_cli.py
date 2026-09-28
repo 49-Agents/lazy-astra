@@ -93,7 +93,7 @@ class CliWorkflowTests(unittest.TestCase):
             update = ('set-worker-launcher', '--worker-id', actor['luna_id'], '--claude-command', 'claude')
             result = self.invoke(*update)
             after = dict(store.agent(actor['luna_id']))
-            self.assertEqual(after.pop('command'), '/usr/bin/claude --model claude-opus-5-5')
+            self.assertEqual(after.pop('command'), '/usr/bin/claude --model claude-sonnet-5-5')
             before.pop('command')
             self.assertEqual(after, before)
             self.assertTrue(result['session_requirement'])
@@ -128,12 +128,12 @@ class CliWorkflowTests(unittest.TestCase):
             self.invoke_fails('set-worker-launcher', '--worker-id', actor['luna_id'],
                               '--claude-command', 'claude', contains='Claude Code Worker')
 
-    def test_new_actor_defaults_to_claude_opus_medium(self):
+    def test_new_actor_defaults_to_claude_sonnet_xhigh(self):
         with mock.patch('acla.cli.DEFAULT_BACKEND', 'claude-code'), mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x):
             result = self.start_actor()
         self.assertEqual(result['executor_backend'], 'claude-code')
-        self.assertEqual(result['luna_model'], 'claude-opus-5-5')
-        self.assertEqual(result['luna_launch_effort'], 'medium')
+        self.assertEqual(result['luna_model'], 'claude-sonnet-5-5')
+        self.assertEqual(result['luna_launch_effort'], 'xhigh')
         self.assertTrue(result['reviewLoop'])
         self.assertEqual(result['n_reviewers'], 2)
 
@@ -143,13 +143,24 @@ class CliWorkflowTests(unittest.TestCase):
                 '--handoff-file', str(self.handoff))
         with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x.rsplit('/', 1)[-1]):
             result = self.invoke(*args, '--executor-backend', 'claude-code')
-            self.assertEqual(result['luna_model'], 'claude-opus-5-5')
-            self.assertEqual(result['luna_launch_effort'], 'medium')
+            self.assertEqual(result['luna_model'], 'claude-sonnet-5-5')
+            self.assertEqual(result['luna_launch_effort'], 'xhigh')
             self.assertIn('_claude-run', self.mock_launch.call_args.args[2])
             resumed = self.invoke(*args)
             self.assertEqual(resumed['claude_session_id'], result['claude_session_id'])
             self.assertEqual(resumed['executor_backend'], 'claude-code')
             self.invoke_fails(*args, '--executor-backend', 'codex', contains='Backend changes')
+
+    def test_claude_resume_keeps_explicit_old_model_and_effort(self):
+        args = ('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                '--workspace', self.workspace_one, '--luna-name', 'claude',
+                '--handoff-file', self.handoff, '--executor-backend', 'claude-code')
+        with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x.rsplit('/', 1)[-1]):
+            first = self.invoke(*args, '--worker-model', 'claude-opus-5-5', '--worker-effort', 'medium')
+            resumed = self.invoke(*args)
+        self.assertEqual(resumed['luna_model'], 'claude-opus-5-5')
+        self.assertEqual(resumed['luna_launch_effort'], 'medium')
+        self.assertEqual(resumed['claude_session_id'], first['claude_session_id'])
 
     def test_claude_runner_initial_and_resume_turns(self):
         from acla.claude_runner import run
@@ -168,11 +179,12 @@ class CliWorkflowTests(unittest.TestCase):
                 'session_id':actor['claude_session_id'], 'permissionMode':'bypassPermissions'}) + '\n' +
                 json.dumps({'type':'result', 'is_error':False}) + '\n')
             process.wait.return_value = 0
-            with mock.patch('acla.claude_runner.subprocess.Popen', return_value=process) as popen, contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.dict(os.environ, {'CLAUDE_CODE_EFFORT_LEVEL': 'low'}), mock.patch('acla.claude_runner.subprocess.Popen', return_value=process) as popen, contextlib.redirect_stdout(io.StringIO()):
                 run(argparse.Namespace(state=str(self.state), luna_id=actor['luna_id']))
             argv = popen.call_args.args[0]
             self.assertIn(flag, argv)
-            self.assertEqual(argv[argv.index('--effort') + 1], 'medium')
+            self.assertEqual(argv[argv.index('--effort') + 1], 'xhigh')
+            self.assertEqual(popen.call_args.kwargs['env']['CLAUDE_CODE_EFFORT_LEVEL'], 'xhigh')
             self.assertEqual(popen.call_args.kwargs['env']['CLAUDE_CODE_DISABLE_FAST_MODE'], '1')
             self.assertNotIn('CODEX_THREAD_ID', popen.call_args.kwargs['env'])
         store = self.store()
