@@ -1,6 +1,6 @@
 {
   "name": "astra-critic-luna-actor",
-  "version": "0.1.0+codex.20260930182210",
+  "version": "0.1.0+codex.20260930185638",
   "description": "Run the ACLA Manager and Worker review workflow with a local inbox and tmux sessions.",
   "author": {
     "name": "ACLA contributors"
