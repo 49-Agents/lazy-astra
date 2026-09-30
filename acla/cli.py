@@ -530,6 +530,10 @@ def cmd_watch(args):
             while True:
                 try:
                     cmd_poll(argparse.Namespace(state=str(store.path), limit=100), quiet=True)
+                    from .cleanup import reap_approved_workers
+                    cleanup = reap_approved_workers(store)
+                    if cleanup['stopped'] or cleanup['errors']:
+                        output({'approved_idle_cleanup': cleanup})
                 except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
                     output({'watcher_error': str(exc)})
                 if args.once:

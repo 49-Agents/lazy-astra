@@ -361,3 +361,18 @@ Codex idle nudging is currently **unsupported**: launch output explicitly report
 `idle_nudge_supported=false`. No reliable live turn-state signal is available in
 this integration; a silent transcript is not proof of inactivity. Local prompt
 instructions work for Codex independently of that limitation.
+
+## Approved Worker cleanup
+
+The watcher closes owned Worker tmux sessions after approval and at least 24 hours
+without inbox activity in either direction. The clock uses the latest message
+creation, delivery, read or acknowledgement timestamp, so late handling restarts
+the grace period. Pending, leased or uncertain messages prevent cleanup. Missing
+history and malformed timestamps are not treated as idle. Both backends are
+covered; this uses inbox silence plus approval, not inferred model/CPU inactivity.
+
+Cleanup rechecks approval and messages under the startup lock and a database
+write lock, verifies tmux ownership, and closes only that Worker session. It keeps
+native conversations, inbox records and Git worktrees. It runs on the next watcher
+poll after 24 hours (normally within five minutes). Workers that exit normally
+earlier remain closed. Updating the watcher is required to activate this policy.
