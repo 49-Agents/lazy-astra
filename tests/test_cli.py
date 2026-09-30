@@ -128,6 +128,20 @@ class CliWorkflowTests(unittest.TestCase):
             self.invoke_fails('set-worker-launcher', '--worker-id', actor['luna_id'],
                               '--claude-command', 'claude', contains='Claude Code Worker')
 
+    def test_local_worker_prompt_in_codex_bootstrap_and_resume(self):
+        config_path = self.state.parent / 'local.json'
+        config = json.loads(config_path.read_text())
+        config['defaults']['worker_extra_instructions'] = 'Run focused tests only.'
+        config_path.write_text(json.dumps(config))
+        with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', return_value='/usr/bin/codex'):
+            actor = self.start_actor()
+            self.assertIn('Run focused tests only.', self.mock_launch.call_args.args[2][-1])
+            self.assertFalse(actor['idle_nudge_supported'])
+            with mock.patch.dict(os.environ, {'CODEX_THREAD_ID': self.luna_one_thread}):
+                self.invoke('bind-session', '--worker-id', actor['luna_id'])
+            self.start_actor()
+            self.assertIn('Run focused tests only.', self.mock_launch.call_args.args[2][-1])
+
     def test_new_actor_defaults_to_claude_sonnet_xhigh(self):
         with mock.patch('acla.cli.DEFAULT_BACKEND', 'claude-code'), mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x):
             result = self.start_actor()
@@ -173,14 +187,23 @@ class CliWorkflowTests(unittest.TestCase):
         store.db.execute('UPDATE pairs SET approved=1 WHERE luna_id=?', (actor['luna_id'],))
         store.db.commit()
         store.close()
+        config_path = self.state.parent / 'local.json'
+        config = json.loads(config_path.read_text())
+        config['defaults']['worker_extra_instructions'] = 'Run focused tests only.'
+        config_path.write_text(json.dumps(config))
+        prompts = []
+        def capture_prompt(*args, **kwargs):
+            prompts.append(kwargs['stdin'].read())
+            return process
         for flag in ('--session-id', '--resume'):
             process = mock.Mock()
             process.stdout = io.StringIO(json.dumps({'type':'system', 'subtype':'init',
                 'session_id':actor['claude_session_id'], 'permissionMode':'bypassPermissions'}) + '\n' +
                 json.dumps({'type':'result', 'is_error':False}) + '\n')
             process.wait.return_value = 0
-            with mock.patch.dict(os.environ, {'CLAUDE_CODE_EFFORT_LEVEL': 'low'}), mock.patch('acla.claude_runner.subprocess.Popen', return_value=process) as popen, contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.dict(os.environ, {'CLAUDE_CODE_EFFORT_LEVEL': 'low'}), mock.patch('acla.claude_runner.subprocess.Popen', side_effect=capture_prompt) as popen, contextlib.redirect_stdout(io.StringIO()):
                 run(argparse.Namespace(state=str(self.state), luna_id=actor['luna_id']))
+            self.assertIn('Run focused tests only.', prompts[-1])
             argv = popen.call_args.args[0]
             self.assertIn(flag, argv)
             self.assertEqual(argv[argv.index('--effort') + 1], 'xhigh')
@@ -192,6 +215,35 @@ class CliWorkflowTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'ACLA_LUNA_ID':actor['luna_id'],
                 'ACLA_CLAUDE_SESSION_ID':actor['claude_session_id']}):
             self.assertEqual(cli.bound_recipient(store)['id'], actor['luna_id'])
+        store.close()
+
+    def test_claude_runner_nudges_once_after_confirmed_idle(self):
+        from acla.claude_runner import run
+        import argparse
+        with mock.patch('acla.cli.alive', return_value=False), mock.patch('acla.cli.shutil.which', side_effect=lambda x: '/usr/bin/' + x):
+            actor = self.invoke('run-start', '--run-id', self.run_id, '--goal', 'Review parser',
+                                '--workspace', self.workspace_one, '--luna-name', 'claude',
+                                '--handoff-file', self.handoff, '--executor-backend', 'claude-code',
+                                '--reviewLoop', 'false')
+        prompts = []
+        def spawn(*args, **kwargs):
+            prompts.append(kwargs['stdin'].read())
+            process = mock.Mock()
+            process.stdout = io.StringIO(json.dumps({'type': 'system', 'subtype': 'init',
+                'session_id': actor['claude_session_id'], 'permissionMode': 'bypassPermissions'}) + '\n' +
+                json.dumps({'type': 'result', 'is_error': False, 'stop_reason': 'end_turn',
+                            'queued_turn_count': 0, 'subagent_stats': {'spawned': 0, 'completed': 0}}) + '\n')
+            process.wait.return_value = 0
+            return process
+        with mock.patch('acla.claude_runner.subprocess.Popen', side_effect=spawn), \
+             mock.patch('acla.claude_runner.time.monotonic', side_effect=[0, 600, 600, 1200]), \
+             mock.patch('acla.claude_runner.time.sleep', side_effect=InterruptedError('end observation')), \
+             contextlib.redirect_stdout(io.StringIO()), self.assertRaises(InterruptedError):
+            run(argparse.Namespace(state=str(self.state), luna_id=actor['luna_id']))
+        self.assertEqual(len(prompts), 2)
+        self.assertIn('Self-review is disabled', prompts[1])
+        store = self.store()
+        self.assertEqual(store.db.execute('SELECT COUNT(*) FROM worker_idle_nudges').fetchone()[0], 1)
         store.close()
 
     def test_codex_gpt_still_rejects_medium(self):

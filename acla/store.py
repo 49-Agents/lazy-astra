@@ -71,6 +71,11 @@ class Store:
             recipient_id TEXT PRIMARY KEY REFERENCES agents(id), notification_id TEXT NOT NULL,
             state TEXT NOT NULL, token TEXT, claimed_at TEXT, created_at TEXT NOT NULL, error TEXT
         );
+        CREATE TABLE IF NOT EXISTS worker_idle_nudges (
+            worker_id TEXT NOT NULL REFERENCES agents(id), assignment_message_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(worker_id, assignment_message_id)
+        );
         CREATE INDEX IF NOT EXISTS messages_pending ON messages(recipient_id, delivered_at, id);
         """)
         self._ensure_column("runs", "astra_id", "TEXT")

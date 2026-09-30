@@ -10,11 +10,12 @@ import subprocess
 import tempfile
 import time
 
+from .worker_policy import extra_prompt, settings, nudge_prompt, confirmed_idle_result, claim_idle_nudge
 from .store import Store
 
 
 def run(args):
-    from .cli import bootstrap_message, envelope, helper, review_loop_policy, LUNA_REPORTING_POLICY, state_lock
+    from .cli import bootstrap_message, envelope, helper, review_loop_policy, LUNA_REPORTING_POLICY, state_lock, local_config
     store = Store(args.state)
     child = None
     log_dir = store.path.parent / 'claude-runtime'
@@ -46,19 +47,27 @@ def run(args):
             env.update(ACLA_STATE=str(store.path.resolve()), ACLA_WORKER_ID=luna['id'], ACLA_LUNA_ID=luna['id'],
                        ACLA_CLAUDE_SESSION_ID=luna['claude_session_id'], CODEX_HOME=luna['codex_home'])
             first = True
+            idle_since = None
             while True:
                 luna = store.agent(luna['id'])
                 notification = store.db.execute("SELECT * FROM inbox_notifications WHERE recipient_id=? AND state='pending'",
                                                 (luna['id'],)).fetchone()
+                config = local_config(store.path)
+                _, interval = settings(config)
+                nudging = False
                 if not first and notification is None:
-                    time.sleep(2)
-                    continue
+                    nudging = claim_idle_nudge(store, luna['id'], idle_since, time.monotonic(), interval)
+                    if not nudging:
+                        time.sleep(2)
+                        continue
                 if notification and not store.notification_dispatching(luna['id'], notification['notification_id']):
                     continue
                 prompt = (bootstrap_message(identity, store) if not luna['claude_initialized'] else
-                          LUNA_REPORTING_POLICY + '\n\n' + review_loop_policy(luna) +
+                          LUNA_REPORTING_POLICY + '\n\n' + review_loop_policy(luna) + extra_prompt(config) +
                           '\nContinue only outstanding inbox instructions; do not repeat completed work.\n' +
                           f'Run {helper(store)} inbox next; drain available batches, remaining silent if empty.')
+                if nudging:
+                    prompt = LUNA_REPORTING_POLICY + '\n\n' + review_loop_policy(luna) + extra_prompt(config) + '\n' + nudge_prompt(bool(luna['review_loop']))
                 if notification:
                     prompt += '\n' + envelope(store, notification)
                 argv = shlex.split(luna['command']) + ['--permission-mode', 'bypassPermissions',
@@ -119,6 +128,7 @@ def run(args):
                     store.db.execute('UPDATE agents SET runtime_error=? WHERE id=?', (str(exc), luna['id']))
                     store.db.commit()
                     raise
+                idle_since = time.monotonic() if confirmed_idle_result(result) else None
                 first = False
                 approved = store.db.execute('SELECT approved FROM pairs WHERE luna_id=?', (luna['id'],)).fetchone()[0]
                 outstanding = store.db.execute('SELECT 1 FROM messages WHERE recipient_id=? AND handled_at IS NULL AND legacy=0 LIMIT 1',

@@ -397,3 +397,15 @@ the Worker. Repeat the saved `run-start` afterward. If the previous launcher use
 a different Claude configuration directory, first ensure the replacement can
 access the saved native session. Never reset session identity or edit SQLite to
 bypass this check.
+
+## Private Worker additions and idle recovery
+
+Local `defaults.worker_extra_instructions` is appended to Worker bootstrap and
+resume prompts. Use it for machine-specific instructions such as focused tests
+only; do not commit personal prompt text. Explicit owner instructions still govern.
+`defaults.worker_idle_nudge_seconds` defaults to 600; 0 disables it. Idle nudges
+are automatic only for Claude Workers whose runner confirms a completed turn and
+no outstanding background work. Codex reports `idle_nudge_supported=false` until
+reliable live activity detection is available. Do not substitute Manager polling
+or manual wakeups. Nudges respect disabled review and reports/questions already
+sent; they never request interim reports. Manager still ends its turn on handoff.

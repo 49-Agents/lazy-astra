@@ -14,6 +14,7 @@ import sys
 import time
 import uuid
 
+from .worker_policy import extra_prompt, settings as worker_settings
 from .store import Store, new_id
 from .tmux import DEFAULT_SOCKET, alive, metadata, launch, safe_session, stop_owned, verify_destination
 from .delivery import DeliveryUnavailable, DeliveryUncertain, queue_message
@@ -240,7 +241,7 @@ Review thread: {result['thread_id']}
 Workspace: {luna['workspace']}
 Selected model: {luna['model']}
 
-{LUNA_REPORTING_POLICY}
+{LUNA_REPORTING_POLICY}{extra_prompt(local_config(store.path))}
 
 {review_loop_policy(luna)}
 
@@ -308,6 +309,7 @@ def cmd_run_start(args):
                 if alive(existing['tmux_session'], existing['tmux_socket']):
                     raise ValueError('Stop the existing actor before changing reviewLoop or n_reviewers, then resume the same actor')
             config = local_config(store.path)
+            worker_settings(config)
             defaults = config['defaults']
             review_loop = (args.review_loop if args.review_loop is not None else
                            (bool(existing['review_loop']) if existing else defaults.get('review_loop', True)))
@@ -391,7 +393,7 @@ def cmd_run_start(args):
             if not luna['codex_thread_id']:
                 argv.append(bootstrap_message(result, store))
             else:
-                argv.append(LUNA_REPORTING_POLICY + '\n\n' + review_loop_policy(luna))
+                argv.append(LUNA_REPORTING_POLICY + '\n\n' + review_loop_policy(luna) + extra_prompt(config))
             if backend == 'claude-code':
                 if not alive(session, luna['tmux_socket']):
                     store.db.execute('UPDATE agents SET reasoning_effort=? WHERE id=?', (effort, luna['id']))
@@ -413,6 +415,8 @@ def cmd_run_start(args):
                     'reasoning_effort_supported': bool(luna['reasoning_effort_supported']),
                     'reasoning_mode': luna['reasoning_mode'],
                     'requested_luna_effort': effort,
+                    'idle_nudge_supported': backend == 'claude-code',
+                    'idle_nudge_seconds': worker_settings(config)[1] if backend == 'claude-code' else None,
                     'luna_launch_effort': effort if created else luna['reasoning_effort'],
                     'effort_restart_required': not created and luna['reasoning_effort'] != effort,
                     'workspace_trust': args.workspace_trust if created else 'existing-session',

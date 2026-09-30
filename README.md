@@ -324,3 +324,40 @@ plan/worktree input and may only read and comment. `reviewLoop=false` disables i
 Existing actors keep their saved policy (older rows inherit their executor model).
 Codex actors inherit their selected executor model for reviews. Status reports the
 effective reviewer model.
+
+## Local Worker instructions and idle recovery
+
+Private `local.json` may add instructions without rebuilding the plugin:
+
+```json
+{
+  "defaults": {
+    "worker_extra_instructions": "Run only focused tests covering changed behavior and directly affected integrations. Do not run full test suites unless the owner explicitly requests them.",
+    "worker_idle_nudge_seconds": 600
+  }
+}
+```
+
+These instructions are appended to Worker bootstrap and resume prompts on both
+backends, and every subsequent Claude runner turn. They do not grant permissions
+or override explicit owner requests. Codex sessions already running need a normal
+resume to adopt prompt changes. Keep personal instructions out of the public repo.
+
+Claude idle recovery defaults to 600 seconds; `0` disables it. The serial runner
+waits until a successful process has exited with an end-turn result, no queued
+turns, and all reported native subagents completed. Missing/uncertain activity
+metadata disables nudging. It never interrupts a running process or infers idle
+from quiet terminal output. The nudge continues the existing assignment: complete
+an outstanding configured review only if enabled, send the final report, ask a
+blocker question, or continue work. No progress messages are requested.
+
+Reports, questions awaiting Manager, pending/uncertain inbox work, runtime errors,
+inactive and approved Workers suppress nudges. One durable nudge is allowed per
+assignment generation (initial handoff or latest Manager input), including across
+restarts. A failed nudge is not automatically retried. Restarting the runner resets
+the idle timer conservatively. This is recovery, not a progress monitor.
+
+Codex idle nudging is currently **unsupported**: launch output explicitly reports
+`idle_nudge_supported=false`. No reliable live turn-state signal is available in
+this integration; a silent transcript is not proof of inactivity. Local prompt
+instructions work for Codex independently of that limitation.
