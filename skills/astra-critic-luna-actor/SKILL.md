@@ -220,7 +220,7 @@ after one restart with the updated launcher, report the exact blocker.
 
 `run-start --reviewLoop true --n_reviewers 2` enables the executor's native
 review loop. `reviewLoop` is a boolean (new-actor default **true**);
-`n_reviewers` is a positive integer (this machine's default **2**). Both are saved per actor,
+`n_reviewers` is a positive integer (package fallback **2**). Both are saved per actor,
 shown by run-start/status, and preserved when omitted on resume. The equivalent
 kebab-case flags are `--review-loop` and `--n-reviewers`. Stop/resume the same
 actor before changing these settings for an existing live terminal.
@@ -229,8 +229,7 @@ When enabled, after implementation and before reporting to Manager, the executor
 creates exactly `n_reviewers` **native subagents of its executor backend**, never tmux/ACLA actors.
 Codex uses its native subagent tools; Claude Code uses its native Agent tool.
 They use the saved reviewer model and full-access/never-approval configuration.
-Start all reviewers concurrently in one batch when the backend allows it. On this
-machine, Claude Code executors use Sonnet 5.5 and two Sonnet reviewers by default.
+Start all reviewers concurrently in one batch when the backend allows it. Without local overrides, Claude Code executors use Sonnet 5.5 and two Sonnet reviewers by default.
 `--reviewLoop false` explicitly opts out. Use it when the user requests ACLA
 “without review” or “without self-review”. This does not change the handoff/yield
 rule: end the turn after dispatch. Honor an explicit request to skip Manager

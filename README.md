@@ -1,6 +1,6 @@
-# ACLA
+# Lazy Astra (ACLA)
 
-**This machine's default ACLA loop: Claude Code Sonnet 5.5 builder, xhigh effort, then two parallel Sonnet reviewers.**
+**Package fallback ACLA loop: Claude Code Sonnet 5.5 builder, xhigh effort, then two parallel Sonnet reviewers.**
 Use `--executor-backend codex` to select Codex with its configured model.
 Existing actors retain their saved backend, model and effort on resume.
 
@@ -91,7 +91,7 @@ The returned/status `worker_launch_effort` records the last launch setting, not
 the observed effort of subsequent turns. Confirm actual effort in telemetry.
 
 Every Codex actor launch and resume uses `danger-full-access` with approval policy
-`never`, as required by the owner. This gives Worker filesystem and network access
+`never`, by design. This gives Worker filesystem and network access
 without command approval prompts, including access to shared Git metadata.
 Actor launches disable the interactive CLI update check so unattended startup
 does not stop at an update menu. ACLA trusts the selected actor workspace for each launch
@@ -219,7 +219,7 @@ workstream is approved. Nothing is automatically merged or deployed.
 
 Add `--reviewLoop true --n_reviewers 2` to `run-start` to enable review after
 implementation and before the executor reports to Manager. Defaults for new actors
-are `reviewLoop=true` and `n_reviewers=2` on this machine; both persist per actor and are reported
+are `reviewLoop=true` and `n_reviewers=2` unless overridden in local configuration; both persist per actor and are reported
 by status. Omitted options retain saved settings on resume. Changing settings for
 a live actor requires stop/resume; the helper does not silently interrupt it.
 
@@ -301,14 +301,16 @@ python3 /absolute/plugin/acla_cli.py inbox acknowledge --token '<claim token>' -
 
 ## Installation and checks
 
-This repository is an installable Codex plugin with one skill in `skills/`.
-Use the Codex Plugin Creator personal-marketplace workflow; after reinstalling,
-start a new task to load the new skill. The skill resolves helpers from its own
-installed plugin directory, so it works independently of a source checkout.
+See [Installation](docs/INSTALL.md) for standalone CLI and Codex plugin setup.
+The plugin contains two skills: the short `/ACLA` entrypoint and the full workflow.
+Start a new task after installation. Helpers resolve from the installed plugin
+directory, independently of the source checkout.
+
+Package defaults are fallbacks, not settings imposed on your machine. Local
+configuration can disable self-review or select another supported executor.
 
 ```bash
-python3 -m unittest discover -s tests -v
-python3 /path/to/plugin-creator/scripts/validate_plugin.py .
+PYTHONPATH=tests python3 -m unittest test_cleanup test_worker_policy -v
 ```
 
 See `docs/VERIFICATION.md` for the evidence and remaining runtime limits from the

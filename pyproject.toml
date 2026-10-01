@@ -12,5 +12,11 @@ license = {text = "MIT"}
 [project.scripts]
 acla = "acla.cli:main"
 
+[project.urls]
+Repository = "https://github.com/49-Agents/lazy-astra"
+
+[tool.setuptools]
+py-modules = ["acla_cli"]
+
 [tool.setuptools.packages.find]
 include = ["acla*"]
